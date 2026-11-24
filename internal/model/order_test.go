@@ -15,6 +15,9 @@ func names(chs []Channel) string {
 }
 
 func TestSortChannelsDanish(t *testing.T) {
+	// LC_ALL and LC_COLLATE take precedence over LANG (CI runners set them)
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_COLLATE", "")
 	t.Setenv("LANG", "da_DK.UTF-8")
 	collatorOnce = sync.Once{}
 	chs := []Channel{{DisplayName: "Økonomi"}, {DisplayName: "arv"}, {DisplayName: "Ægtepagter"}, {DisplayName: "General"}, {DisplayName: "Zebra"}, {DisplayName: "Ånden"}, {DisplayName: "Bolig"}}
