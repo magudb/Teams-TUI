@@ -1,0 +1,11 @@
+{"type":"AdaptiveCard","version":"1.5","body":[
+ {"type":"TextBlock","text":"Weekly incidents","style":"heading"},
+ {"type":"Table","columns":[{"width":2},{"width":1},{"width":1}],"rows":[
+   {"type":"TableRow","cells":[{"type":"TableCell","items":[{"type":"TextBlock","text":"Service"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"Count"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"Status"}]}]},
+   {"type":"TableRow","cells":[{"type":"TableCell","items":[{"type":"TextBlock","text":"billing-service"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"3"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"Degraded","color":"warning"}]}]},
+   {"type":"TableRow","cells":[{"type":"TableCell","items":[{"type":"TextBlock","text":"checkout"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"1"}]},{"type":"TableCell","items":[{"type":"TextBlock","text":"Resolved","color":"good"}]}]}
+ ]},
+ {"type":"Container","style":"attention","items":[{"type":"TextBlock","text":"On-call: <at>Alex Morgan</at>","wrap":true}]},
+ {"type":"Mystery","fallback":{"type":"TextBlock","text":"fallback text"}},
+ {"type":"Other"}
+]}

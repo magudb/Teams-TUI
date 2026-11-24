@@ -1,0 +1,27 @@
+# build output
+bin/
+dist/
+*.test
+*.out
+coverage.*
+
+# local app data — never commit (tokens, config, UI state)
+token.json
+config.json
+state.json
+.teams-tui/
+
+# secrets / env
+.env
+.env.*
+*.pem
+*.key
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# test dumps
+dump/

@@ -1,0 +1,3 @@
+{"title":"[contoso/api] Pull request opened: #42 Add retry to billing client","themeColor":"0076D7",
+ "sections":[{"activityTitle":"Alex Morgan opened a pull request","activitySubtitle":"contoso/api","facts":[{"name":"Branch","value":"fix/billing-retry"},{"name":"Reviewers","value":"Noah, Lars"}],"text":"Adds exponential backoff to the billing client."}],
+ "potentialAction":[{"@type":"OpenUri","name":"View pull request","targets":[{"os":"default","uri":"https://github.example/contoso/api/pull/42"}]},{"@type":"HttpPOST","name":"Approve"}]}

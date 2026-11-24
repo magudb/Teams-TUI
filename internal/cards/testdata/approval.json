@@ -1,0 +1,29 @@
+{
+  "type": "AdaptiveCard", "version": "1.4",
+  "body": [
+    {"type": "TextBlock", "text": "Approval requested: Contract renewal", "size": "Large", "weight": "Bolder", "wrap": true},
+    {"type": "ColumnSet", "columns": [
+      {"type": "Column", "width": "auto", "items": [{"type": "Image", "url": "https://example.com/avatar.png", "altText": "Sofie", "size": "Small"}]},
+      {"type": "Column", "width": "stretch", "items": [
+        {"type": "TextBlock", "text": "**Sofie Jensen** requested approval", "wrap": true},
+        {"type": "TextBlock", "text": "Submitted {{DATE(2026-11-20T10:00:00Z, SHORT)}}", "isSubtle": true, "spacing": "None"}
+      ]}
+    ]},
+    {"type": "FactSet", "facts": [
+      {"title": "Customer", "value": "Contoso A/S"},
+      {"title": "Amount", "value": "DKK 125,000"},
+      {"title": "Due", "value": "30 November"}
+    ]},
+    {"type": "TextBlock", "id": "details", "isVisible": false, "text": "Renewal for 24 months with a 5% uplift.", "wrap": true},
+    {"type": "Input.Text", "id": "comment", "placeholder": "Add a comment", "label": "Comment"}
+  ],
+  "actions": [
+    {"type": "Action.Submit", "title": "Approve", "style": "positive"},
+    {"type": "Action.Submit", "title": "Reject", "style": "destructive"},
+    {"type": "Action.ToggleVisibility", "title": "Details", "targetElements": ["details"]},
+    {"type": "Action.ShowCard", "title": "Delegate", "card": {"type": "AdaptiveCard", "body": [
+      {"type": "Input.ChoiceSet", "id": "who", "label": "Delegate to", "choices": [{"title": "Lars Nielsen", "value": "lars"}, {"title": "Noah Petersen", "value": "noah"}]}
+    ], "actions": [{"type": "Action.Submit", "title": "Delegate"}]}},
+    {"type": "Action.OpenUrl", "title": "View in Approvals", "url": "https://approvals.example.com/123"}
+  ]
+}
