@@ -35,6 +35,8 @@ type convView struct {
 	// newSince marks where the "New messages" divider goes (chats opened while unread)
 	newSince time.Time
 
+	side bool // rendered for a side pane (different fills)
+
 	cardState map[string]*cards.State // "<msgID>:<attachment index>" -> interactive card state
 	cardActs  map[string]cardRef      // zone id -> card button (rebuilt on render)
 }

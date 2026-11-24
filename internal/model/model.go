@@ -343,5 +343,7 @@ type Service interface {
 	RecentFiles(ctx context.Context) ([]DriveItem, error)
 	Folder(ctx context.Context, item *DriveItem) ([]DriveItem, error) // nil = OneDrive root
 	ChannelFiles(ctx context.Context, teamID, channelID string) ([]DriveItem, error)
+	SharedFiles(ctx context.Context) ([]DriveItem, error)
+	UploadFile(ctx context.Context, folder *DriveItem, localPath string) (DriveItem, error)
 	Download(ctx context.Context, item DriveItem, dest string) error
 }

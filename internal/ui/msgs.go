@@ -87,13 +87,14 @@ type uploadMsg struct {
 
 // opMsg is a generic "operation finished" message.
 type opMsg struct {
-	toast   string
-	err     error
-	reload  model.ConvRef // reload this conversation afterwards
-	chats   bool          // reload chat list
-	events  bool          // reload calendar
-	presenc bool          // reload my presence
-	open    string        // open this file/url
+	toast       string
+	err         error
+	reload      model.ConvRef // reload this conversation afterwards
+	chats       bool          // reload chat list
+	events      bool          // reload calendar
+	presenc     bool          // reload my presence
+	open        string        // open this file/url
+	reloadFiles bool
 }
 
 type tickMsg time.Time

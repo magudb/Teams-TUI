@@ -80,7 +80,7 @@ func (m *Model) openConvAt(ref model.ConvRef, msgID string) tea.Cmd {
 			want = "chan:" + root.ChannelID
 			m.markChannelSeen(root)
 		}
-		if cur := m.sideSel[m.section]; cur != want && cur != "u:"+want {
+		if cur := m.sideSel[m.section]; cur != want && cur != "u:"+want && cur != "fav:"+want {
 			m.sideSel[m.section] = want
 		}
 		m.sideTouched[m.section] = true
@@ -121,9 +121,15 @@ func (m *Model) closeThread() {
 	}
 }
 
+// mainHasList reports whether the main pane is a navigable list (Files
+// table, Settings) rather than a conversation.
+func (m *Model) mainHasList() bool {
+	return m.section == SecSettings || (m.section == SecFiles && m.conv == nil)
+}
+
 func (m *Model) switchSection(s Section) tea.Cmd {
-	if s == SecTeams && m.cfg.CombinedChat {
-		s = SecChat
+	if m.liveMeeting != "" && s != SecCalendar {
+		m.leaveMeetingView()
 	}
 	if s == m.section {
 		return nil
@@ -147,7 +153,7 @@ func (m *Model) switchSection(s Section) tea.Cmd {
 		m.searchInput.Focus()
 		return nil
 	}
-	if m.focus != FocusSidebar && (s == SecFiles || s == SecCalendar) {
+	if m.focus != FocusSidebar && (s == SecFiles || s == SecCalendar || s == SecSettings) {
 		m.setFocus(FocusSidebar)
 	}
 	return cmd
@@ -157,7 +163,7 @@ func (m *Model) setFocus(f Focus) {
 	if f == FocusCompose && m.activeConv() == nil {
 		f = FocusSidebar
 	}
-	if f == FocusMessages && m.activeConv() == nil {
+	if f == FocusMessages && m.activeConv() == nil && !m.mainHasList() {
 		f = FocusSidebar
 	}
 	m.focus = f
@@ -190,7 +196,10 @@ func (m *Model) focusCompose() tea.Cmd {
 
 func (m *Model) cycleFocus(d int) {
 	order := []Focus{FocusSidebar}
-	if m.activeConv() != nil && m.section != SecCalendar && !(m.section == SecFiles && m.conv == nil) {
+	switch {
+	case m.mainHasList():
+		order = append(order, FocusMessages)
+	case m.activeConv() != nil && m.section != SecCalendar:
 		order = append(order, FocusMessages, FocusCompose)
 	}
 	if !m.showSidebar && len(order) > 1 {
@@ -583,43 +592,56 @@ func (m *Model) fileAction(action string, f *model.DriveItem) tea.Cmd {
 // ---- palette & help ---------------------------------------------------------------
 
 func (m *Model) openPalette() {
+	ic := m.s.ic
 	sec := func(s Section) func(m *Model) tea.Cmd { return func(m *Model) tea.Cmd { return m.switchSection(s) } }
-	items := []modalItem{
-		{label: "💬 New chat", hint: "ctrl+n", run: func(m *Model) tea.Cmd { m.openPeoplePicker("New chat", true, ""); return m.pendingTake() }},
-		{label: "📅 New meeting", hint: "", run: func(m *Model) tea.Cmd { m.openMeetingForm(""); return nil }},
-		{label: "● Set status", hint: "", run: func(m *Model) tea.Cmd { m.openPresencePicker(); return nil }},
-		{label: "✎ Set status message", run: func(m *Model) tea.Cmd {
+	const acts, goTo = "Actions", "Go to"
+	var items []modalItem
+	if e := m.upcomingMeeting(); e != nil {
+		ev := e
+		items = append(items,
+			modalItem{section: acts, label: ic.Video + " Join " + ev.Subject, hint: "alt+j", run: func(m *Model) tea.Cmd { return m.joinEvent(ev) }},
+			modalItem{section: acts, label: ic.Chat + " Open meeting chat: " + ev.Subject, run: func(m *Model) tea.Cmd { return m.openMeetingChat(ev) }})
+	}
+	items = append(items,
+		modalItem{section: acts, label: ic.Chat + " New chat", hint: "ctrl+n", run: func(m *Model) tea.Cmd { m.openPeoplePicker("New chat", true, ""); return m.pendingTake() }},
+		modalItem{section: acts, label: ic.Calendar + " New meeting…", hint: "/meeting", run: func(m *Model) tea.Cmd { m.openMeetingForm(""); return nil }},
+		modalItem{section: acts, label: "● Set status: Available", hint: "/available", run: func(m *Model) tea.Cmd { return m.setPresenceCmd("available") }},
+		modalItem{section: acts, label: "● Set status: In a meeting", hint: "/busy", run: func(m *Model) tea.Cmd { return m.setPresenceCmd("busy") }},
+		modalItem{section: acts, label: "● Set status: Do not disturb", hint: "/dnd", run: func(m *Model) tea.Cmd { return m.setPresenceCmd("dnd") }},
+		modalItem{section: acts, label: ic.Pencil + " Set status message…", hint: "/status", run: func(m *Model) tea.Cmd {
 			m.openPrompt("Status message", "What's happening?", m.myPresence.StatusMessage, func(m *Model, s string) tea.Cmd { return m.setStatusMessage(s) })
 			return nil
 		}},
-		{label: "🔍 Search messages", hint: "ctrl+e", run: sec(SecSearch)},
-		{label: "🔔 Activity", hint: "alt+1", run: sec(SecActivity)},
-		{label: "💬 Chat", hint: "alt+2", run: sec(SecChat)},
-		{label: "👥 Teams", hint: "alt+3", run: sec(SecTeams)},
-		{label: "📅 Calendar", hint: "alt+4", run: sec(SecCalendar)},
-		{label: "📁 Files", hint: "alt+5", run: sec(SecFiles)},
-		{label: "↻ Refresh", hint: "ctrl+r", run: func(m *Model) tea.Cmd { return m.refresh() }},
-		{label: "◧ Toggle sidebar", hint: "ctrl+b", run: func(m *Model) tea.Cmd { m.showSidebar = !m.showSidebar; m.invalidateRender(); return nil }},
-		{label: "❓ Keyboard shortcuts", hint: "?", run: func(m *Model) tea.Cmd { m.openHelp(); return nil }},
-		{label: "⏻ Quit", hint: "ctrl+c", run: func(m *Model) tea.Cmd { return tea.Quit }},
-	}
-	if e := m.upcomingMeeting(); e != nil {
-		ev := e
-		items = append([]modalItem{{label: "📹 Join " + ev.Subject + " (" + untilLabel(ev) + ")", hint: "alt+j", run: func(m *Model) tea.Cmd { return m.joinEvent(ev) }},
-			{label: "💬 Meeting chat: " + ev.Subject, run: func(m *Model) tea.Cmd { return m.openMeetingChat(ev) }}}, items...)
-	}
+		modalItem{section: acts, label: "↻ Refresh", hint: "ctrl+r", run: func(m *Model) tea.Cmd { return m.refresh() }},
+		modalItem{section: acts, label: "◧ Toggle sidebar", hint: "ctrl+b", run: func(m *Model) tea.Cmd { m.showSidebar = !m.showSidebar; m.invalidateRender(); return nil }},
+		modalItem{section: acts, label: ic.Help + " Keyboard shortcuts", hint: "?", run: func(m *Model) tea.Cmd { m.openHelp(); return nil }},
+		modalItem{section: acts, label: "Quit", hint: "ctrl+c", run: func(m *Model) tea.Cmd { return tea.Quit }},
+		modalItem{section: goTo, label: ic.Bell + " Activity", hint: "alt+1", run: sec(SecActivity)},
+		modalItem{section: goTo, label: ic.Chat + " Chat", hint: "alt+2", run: sec(SecChat)},
+		modalItem{section: goTo, label: ic.Teams + " Teams", hint: "alt+3", run: sec(SecTeams)},
+		modalItem{section: goTo, label: ic.Calendar + " Calendar", hint: "alt+4", run: sec(SecCalendar)},
+		modalItem{section: goTo, label: ic.Files + " Files", hint: "alt+5", run: sec(SecFiles)},
+		modalItem{section: goTo, label: ic.Search + " Search", hint: "ctrl+e", run: sec(SecSearch)},
+		modalItem{section: goTo, label: ic.Settings + " Settings", run: sec(SecSettings)},
+	)
 	// jump to chats and channels
 	for _, c := range m.chats {
 		c := c
-		items = append(items, modalItem{label: "→ " + c.Title(m.me.ID), hint: "chat", run: func(m *Model) tea.Cmd {
+		icon := ic.Users
+		if c.ChatType == "oneOnOne" {
+			icon = "●"
+		} else if c.ChatType == "meeting" {
+			icon = ic.Video
+		}
+		items = append(items, modalItem{section: goTo, label: icon + " " + c.Title(m.me.ID), hint: "chat", run: func(m *Model) tea.Cmd {
 			m.section = SecChat
 			return m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: c.ID})
 		}})
 	}
 	for _, t := range m.teams {
 		for _, ch := range m.channels[t.ID] {
-			ch := ch
-			items = append(items, modalItem{label: "→ " + t.DisplayName + " › " + ch.DisplayName, hint: "channel", run: func(m *Model) tea.Cmd {
+			ch, team := ch, t.DisplayName
+			items = append(items, modalItem{section: goTo, label: ic.Hash + " " + ch.DisplayName + " " + m.s.Muted.Render(team), hint: "channel", run: func(m *Model) tea.Cmd {
 				m.section = SecTeams
 				if m.cfg.CombinedChat {
 					m.section = SecChat
@@ -628,7 +650,7 @@ func (m *Model) openPalette() {
 			}})
 		}
 	}
-	m.openList("Command palette", items, true).width = 70
+	m.openList("Command palette", items, true).width = 64
 }
 
 func (m *Model) pendingTake() tea.Cmd {
@@ -659,6 +681,7 @@ var helpText = []string{
 	"  ctrl+b            Toggle sidebar",
 	"  ctrl+r            Refresh",
 	"  alt+j             Join the meeting that is live or starts within 10 min",
+	"  Settings          click the gear in the rail, or ctrl+k → Settings",
 	"  tab / shift+tab   Cycle focus: sidebar → messages → compose",
 	"  esc               Back (close modal / thread / leave compose)",
 	"  ?  or  F1         This help",
@@ -670,8 +693,8 @@ var helpText = []string{
 	"  ←  h              Collapse team",
 	"  /                 Filter chats",
 	"  .  or  space      Chat actions (pin, mute, rename, add people, leave…)",
-	"  p / m             Pin / mute chat",
-	"  alt+↑/↓  or  K/J  Move pinned chat or team up / down",
+	"  p / m             Add to / remove from Favorites · mute (chats and channels)",
+	"  alt+↑/↓  or  K/J  Move a favorite or a team up / down",
 	"  H                 Hide / show team (hidden teams collapse at the bottom)",
 	"  m (on a channel)  Mute channel (keeps it out of Unread)",
 	"  enter on a section header (UNREAD / CHANNELS / CHATS) collapses it",
@@ -685,6 +708,7 @@ var helpText = []string{
 	"  e / d             Edit / delete your message",
 	"  y                 Copy text            o  open links & attachments",
 	"  A                 Card buttons (Adaptive Cards); or click a button",
+	"  T                 Open the selected message in Teams (bot buttons, calls)",
 	"  .                 More actions",
 	"",
 	"COMPOSE",
@@ -704,21 +728,22 @@ var helpText = []string{
 	"CALENDAR",
 	"  [ / ]  t          Previous / next day, today",
 	"  j                 Join meeting (opens Teams)",
-	"  c                 Open the meeting chat",
+	"  c                 Open the meeting chat (live meetings open the meeting view:",
+	"                    chat + people; p toggles people, esc leaves)",
 	"  a / T / D         Accept / tentative / decline",
 	"  x / R             Transcript / download recording (after the meeting)",
 	"  n                 New meeting",
 	"",
 	"FILES",
 	"  enter             Open folder / open file in browser",
-	"  d                 Download to " + "~/Downloads",
-	"  y                 Copy link         backspace  up a folder",
-	"  r                 Toggle Recent / My files",
+	"  sidebar           Recent · My files · Shared with me · channel files",
+	"  tab → table       ↑↓ select · enter open · d download · y copy link",
+	"  u                 Upload a file      / filter      backspace  up a folder",
 	"",
 	"MOUSE",
 	"  Click rail, chats, channels, messages, reactions, buttons and tabs.",
 	"  Wheel scrolls lists and messages. Click a reaction chip to toggle it.",
-	"  Drag a pinned chat or a team onto another to reorder. Right-click for actions.",
+	"  Drag a favorite or a team onto another to reorder. Right-click for actions.",
 	"  Click your status (bottom left) to change presence.",
 }
 

@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"time"
 
@@ -24,12 +25,11 @@ const (
 	SecCalendar
 	SecFiles
 	SecSearch
+	SecSettings
 	numSections
 )
 
-var sectionNames = [...]string{"Activity", "Chat", "Teams", "Calendar", "Files", "Search"}
-var sectionIcons = [...]string{"🔔", "💬", "👥", "📅", "📁", "🔍"}
-var sectionASCII = [...]string{"!", "#", "@", "=", "&", "?"}
+var sectionNames = [...]string{"Activity", "Chat", "Teams", "Calendar", "Files", "Search", "Settings"}
 
 // Focus is the focused pane.
 type Focus int
@@ -82,8 +82,6 @@ type Model struct {
 	selEvent    string
 	files       []model.DriveItem
 	fileStack   []model.DriveItem
-	filesKey    string
-	selFile     string
 	searchInput textinput.Model
 	searchQ     string
 	hits        []model.SearchHit
@@ -117,6 +115,17 @@ type Model struct {
 	pendingSelect string
 	dragKey       string           // sidebar item being pressed/dragged
 	sideTouched   map[Section]bool // user has chosen a selection (otherwise it follows the first item)
+	jumpMention   string           // message opened from a mention in Activity (gets a MENTION badge)
+	searchTarget  string           // message opened from search (match highlighted)
+	fileCounts    map[string]int
+	fileLoc       string // files location key (loc:recent, loc:root, loc:shared, loc:chan:…)
+	fileSel       int    // selected row in the files table
+	fileFilter    string
+	setSel        int // selected settings row
+	settingsDirty bool
+	signOut       func() error
+	liveMeeting   string // event id shown in the meeting view
+	showPeople    bool   // people pane in the meeting view
 
 	// meetings
 	emailUsers   map[string]model.User // lower-cased email -> directory user
@@ -149,7 +158,7 @@ func New(svc model.Service, cfg config.Config, st *state.State, demo bool) *Mode
 	cf.Prompt = "› "
 	m := &Model{
 		svc: svc, cfg: cfg, st: st, demo: demo,
-		s:           newStyles(cfg.Theme == "light"),
+		s:           newStyles(cfg.Theme != "dark", cfg.Icons),
 		presence:    map[string]model.Presence{},
 		users:       map[string]model.User{},
 		channels:    map[string][]model.Channel{},
@@ -164,6 +173,9 @@ func New(svc model.Service, cfg config.Config, st *state.State, demo bool) *Mode
 		chatTitles:  map[string]string{},
 		chanAct:     map[string]chanActivity{},
 		sideTouched: map[Section]bool{},
+		fileCounts:  map[string]int{},
+		fileLoc:     "loc:recent",
+		showPeople:  true,
 		section:     SecChat,
 		showSidebar: true,
 		focused:     true,
@@ -343,3 +355,8 @@ func Run(m *Model) error {
 	m.saveState()
 	return err
 }
+
+// SetSignOut installs the sign-out action used by Settings.
+func (m *Model) SetSignOut(fn func() error) { m.signOut = fn }
+
+func userHome() (string, error) { return os.UserHomeDir() }

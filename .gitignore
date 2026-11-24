@@ -25,3 +25,4 @@ state.json
 
 # test dumps
 dump/
+.playwright-mcp/

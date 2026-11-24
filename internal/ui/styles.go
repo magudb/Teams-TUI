@@ -14,102 +14,126 @@ import (
 	"github.com/magudb/Teams-TUI/internal/model"
 )
 
+// theme holds the "Blocks" palette from the Terminal Chat Client design:
+// light paper, panes separated by fills, inverse headers, one red accent.
 type theme struct {
-	Accent, AccentDim, Text, Muted, Faint, Border, Danger, Warn, OK, SelBg, SelFg, MineBar lipgloss.TerminalColor
-	BubbleMine, BubbleOther, BubbleUrgent                                                  lipgloss.TerminalColor
-	Names                                                                                  []lipgloss.TerminalColor
+	Paper, Side, Block, Card  lipgloss.Color // pane fills: main, sidebar, blocks/headers, card bodies
+	Ink, OnInk                lipgloss.Color // inverse bars (headers, own messages) and text on them
+	Text, Muted, Faint        lipgloss.Color
+	Accent, OnAccent, Link    lipgloss.Color // selection / badges, text on accent, accent-coloured text
+	Good, Warn, Danger        lipgloss.Color
+	RailBg, RailFg, RailBadge lipgloss.Color
+	RailDot                   lipgloss.Color
+	Names                     []lipgloss.Color
 }
 
 func newTheme(light bool) theme {
 	if light {
 		return theme{
-			Accent: lipgloss.Color("#5B5FC7"), AccentDim: lipgloss.Color("#C5CBFA"), Text: lipgloss.Color("#242424"),
-			Muted: lipgloss.Color("#616161"), Faint: lipgloss.Color("#9E9E9E"), Border: lipgloss.Color("#D1D1D1"),
-			Danger: lipgloss.Color("#C4314B"), Warn: lipgloss.Color("#C19C00"), OK: lipgloss.Color("#13A10E"),
-			SelBg: lipgloss.Color("#E8EBFA"), SelFg: lipgloss.Color("#242424"), MineBar: lipgloss.Color("#5B5FC7"),
-			BubbleMine: lipgloss.Color("#E8EBFA"), BubbleOther: lipgloss.Color("#F0F0F0"), BubbleUrgent: lipgloss.Color("#FDE7E9"),
-			Names: []lipgloss.TerminalColor{lipgloss.Color("#B4009E"), lipgloss.Color("#0063B1"), lipgloss.Color("#CA5010"), lipgloss.Color("#498205"), lipgloss.Color("#8764B8"), lipgloss.Color("#038387"), lipgloss.Color("#986F0B")},
+			Paper: "#F4F1EA", Side: "#E9E5DB", Block: "#DCD7CA", Card: "#FFFDF8",
+			Ink: "#23222A", OnInk: "#F4F1EA",
+			Text: "#23222A", Muted: "#6B6875", Faint: "#A9A6B3",
+			Accent: "#C8452D", OnAccent: "#FFFFFF", Link: "#A3371F",
+			Good: "#3F7D2C", Warn: "#8A6A00", Danger: "#B3261E",
+			RailBg: "#23222A", RailFg: "#A9A6B3", RailBadge: "#FF9D85", RailDot: "#9FD08A",
+			Names: []lipgloss.Color{"#8B2F84", "#1F5F99", "#9A4D00", "#3F7D2C", "#A3371F", "#5B4B8A", "#00796B"},
 		}
 	}
+	// dark variant of Blocks: same structure, inverted values
 	return theme{
-		Accent: lipgloss.Color("#7F85F5"), AccentDim: lipgloss.Color("#3D3E78"), Text: lipgloss.Color("#E6E6E6"),
-		Muted: lipgloss.Color("#ADADAD"), Faint: lipgloss.Color("#707070"), Border: lipgloss.Color("#3D3D3D"),
-		Danger: lipgloss.Color("#F1707B"), Warn: lipgloss.Color("#F8D22A"), OK: lipgloss.Color("#92C353"),
-		SelBg: lipgloss.Color("#2E2F5C"), SelFg: lipgloss.Color("#FFFFFF"), MineBar: lipgloss.Color("#7F85F5"),
-		BubbleMine: lipgloss.Color("#2F3056"), BubbleOther: lipgloss.Color("#2B2B2B"), BubbleUrgent: lipgloss.Color("#3E2326"),
-		Names: []lipgloss.TerminalColor{lipgloss.Color("#E8A2E0"), lipgloss.Color("#8AC5FF"), lipgloss.Color("#FFB27A"), lipgloss.Color("#A8D98A"), lipgloss.Color("#C3B1F2"), lipgloss.Color("#6FD6D9"), lipgloss.Color("#E6CC7A")},
+		Paper: "#1E1D24", Side: "#26252D", Block: "#33313B", Card: "#2B2A32",
+		Ink: "#E9E5DB", OnInk: "#1E1D24",
+		Text: "#E9E5DB", Muted: "#A9A6B3", Faint: "#6B6875",
+		Accent: "#C8452D", OnAccent: "#FFFFFF", Link: "#FF9D85",
+		Good: "#8CC97A", Warn: "#D9B44A", Danger: "#F06A5E",
+		RailBg: "#141318", RailFg: "#8F8C99", RailBadge: "#FF9D85", RailDot: "#9FD08A",
+		Names: []lipgloss.Color{"#D88BD0", "#7FB2E5", "#E3A15F", "#8CC97A", "#FF9D85", "#B5A6E0", "#5FC4B8"},
 	}
 }
 
 type styles struct {
 	t         theme
+	ic        icons
 	Text      lipgloss.Style
 	Muted     lipgloss.Style
 	Faint     lipgloss.Style
 	Bold      lipgloss.Style
-	Accent    lipgloss.Style
+	Accent    lipgloss.Style // accent-coloured text (links, buttons)
 	Title     lipgloss.Style
 	Danger    lipgloss.Style
 	Warn      lipgloss.Style
 	OK        lipgloss.Style
-	Sel       lipgloss.Style
+	Sel       lipgloss.Style // selected row: accent fill
 	SelDim    lipgloss.Style
 	Border    lipgloss.Style
 	Button    lipgloss.Style
 	ButtonHot lipgloss.Style
-	Chip      lipgloss.Style
-	ChipMine  lipgloss.Style
-	Badge     lipgloss.Style
+	Chip      lipgloss.Style // block-filled chip
+	ChipMine  lipgloss.Style // inverse chip
+	Badge     lipgloss.Style // accent count badge
+	Inverse   lipgloss.Style // inverse bar
 	Tab       lipgloss.Style
 	TabActive lipgloss.Style
 	Modal     lipgloss.Style
 	Status    lipgloss.Style
 	html      htmltext.Styles
 	cards     cards.Styles
+
+	// background prefixes for painting pane fills
+	bgPaper, bgSide, bgBlock, bgCard, bgInk, bgAccent, bgRail string
 }
 
-func newStyles(light bool) styles {
+func newStyles(light bool, iconSet string) styles {
 	t := newTheme(light)
-	s := styles{t: t}
-	s.Text = lipgloss.NewStyle().Foreground(t.Text)
-	s.Muted = lipgloss.NewStyle().Foreground(t.Muted)
-	s.Faint = lipgloss.NewStyle().Foreground(t.Faint)
-	s.Bold = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
-	s.Accent = lipgloss.NewStyle().Foreground(t.Accent)
-	s.Title = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
-	s.Danger = lipgloss.NewStyle().Foreground(t.Danger)
-	s.Warn = lipgloss.NewStyle().Foreground(t.Warn)
-	s.OK = lipgloss.NewStyle().Foreground(t.OK)
-	s.Sel = lipgloss.NewStyle().Background(t.SelBg).Foreground(t.SelFg)
-	s.SelDim = lipgloss.NewStyle().Background(t.AccentDim).Foreground(t.SelFg)
-	s.Border = lipgloss.NewStyle().Foreground(t.Border)
-	s.Button = lipgloss.NewStyle().Foreground(t.Accent)
-	s.ButtonHot = lipgloss.NewStyle().Foreground(t.SelFg).Background(t.Accent).Bold(true)
-	s.Chip = lipgloss.NewStyle().Foreground(t.Text).Background(t.Border)
-	s.ChipMine = lipgloss.NewStyle().Foreground(t.SelFg).Background(t.AccentDim)
-	s.Badge = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(t.Danger).Bold(true)
-	s.Tab = lipgloss.NewStyle().Foreground(t.Muted)
-	s.TabActive = lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Underline(true)
-	s.Modal = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(0, 1)
-	s.Status = lipgloss.NewStyle().Foreground(t.Muted)
+	s := styles{t: t, ic: newIcons(iconSet)}
+	fg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c) }
+	s.Text = fg(t.Text)
+	s.Muted = fg(t.Muted)
+	s.Faint = fg(t.Faint)
+	s.Bold = fg(t.Text).Bold(true)
+	s.Accent = fg(t.Link)
+	s.Title = fg(t.Text).Bold(true)
+	s.Danger = fg(t.Danger)
+	s.Warn = fg(t.Warn)
+	s.OK = fg(t.Good)
+	s.Sel = lipgloss.NewStyle().Background(t.Accent).Foreground(t.OnAccent).Bold(true)
+	s.SelDim = lipgloss.NewStyle().Background(t.Block).Foreground(t.Text)
+	s.Border = fg(t.Faint)
+	s.Button = fg(t.Link).Bold(true)
+	s.ButtonHot = lipgloss.NewStyle().Foreground(t.OnAccent).Background(t.Accent).Bold(true)
+	s.Chip = lipgloss.NewStyle().Foreground(t.Text).Background(t.Block)
+	s.ChipMine = lipgloss.NewStyle().Foreground(t.OnInk).Background(t.Ink)
+	s.Badge = lipgloss.NewStyle().Foreground(t.OnAccent).Background(t.Accent).Bold(true)
+	s.Inverse = lipgloss.NewStyle().Foreground(t.OnInk).Background(t.Ink)
+	s.Tab = fg(t.Link).Bold(true)
+	s.TabActive = s.Inverse.Bold(true)
+	s.Modal = lipgloss.NewStyle()
+	s.Status = fg(t.RailFg)
 	s.html = htmltext.Styles{
 		Text:      s.Text,
-		Link:      lipgloss.NewStyle().Foreground(t.Accent).Underline(true),
-		Mention:   lipgloss.NewStyle().Foreground(t.Accent).Bold(true),
-		MentionMe: lipgloss.NewStyle().Foreground(t.Warn).Bold(true),
-		Code:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#A31515", Dark: "#CE9178"}),
+		Link:      fg(t.Link).Underline(true),
+		Mention:   fg(t.Link).Bold(true),
+		MentionMe: s.Inverse.Bold(true),
+		Code:      fg(t.Link),
 		Quote:     s.Muted,
 		Dim:       s.Faint,
 	}
 	s.cards = cards.Styles{
 		Text: s.Text, Bold: s.Bold, Subtle: s.Muted, Heading: s.Title, Link: s.html.Link, Mention: s.html.Mention,
-		Accent: s.Accent, Good: s.OK, Warning: s.Warn, Attention: s.Danger,
-		Button:         lipgloss.NewStyle().Foreground(t.Accent).Bold(true),
-		ButtonPositive: lipgloss.NewStyle().Foreground(t.OK).Bold(true),
-		ButtonDanger:   lipgloss.NewStyle().Foreground(t.Danger).Bold(true),
-		ButtonDead:     lipgloss.NewStyle().Foreground(t.Muted),
-		Border:         s.Border, Input: s.Text,
+		Accent: s.Accent, Good: s.OK.Bold(true), Warning: s.Warn.Bold(true), Attention: s.Danger.Bold(true),
+		Button:         s.Button,
+		ButtonPositive: s.Button,
+		ButtonDanger:   s.Button,
+		ButtonDead:     s.Muted,
+		Border:         s.Border, Input: s.Muted,
+		TitleBar:    s.Inverse.Bold(true),
+		TableHeader: lipgloss.NewStyle().Background(t.Block).Foreground(t.Text).Bold(true),
+		InputBox:    lipgloss.NewStyle().Background(t.Side).Foreground(t.Muted),
+		Lock:        s.ic.Lock,
+		External:    s.ic.External,
 	}
+	s.bgPaper, s.bgSide, s.bgBlock = bgPrefix(t.Paper), bgPrefix(t.Side), bgPrefix(t.Block)
+	s.bgCard, s.bgInk, s.bgAccent, s.bgRail = bgPrefix(t.Card), bgPrefix(t.Ink), bgPrefix(t.Accent), bgPrefix(t.RailBg)
 	return s
 }
 
@@ -117,6 +141,15 @@ func (s styles) nameColor(id string) lipgloss.Style {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(id))
 	return lipgloss.NewStyle().Foreground(s.t.Names[int(h.Sum32())%len(s.t.Names)]).Bold(true)
+}
+
+// paint fills each line to width w on the background prefix bg.
+func paint(lines []string, w int, bg string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = withBg(l, bg, w)
+	}
+	return out
 }
 
 func (s styles) presenceDot(p model.Presence, known bool) string {
@@ -129,7 +162,7 @@ func (s styles) presenceDot(p model.Presence, known bool) string {
 	case model.Busy, "BusyIdle":
 		return s.Danger.Render("●")
 	case model.DoNotDisturb:
-		return s.Danger.Render("⊖")
+		return s.Danger.Render("●")
 	case model.Away, model.BeRightBack:
 		return s.Warn.Render("◷")
 	case model.Offline:

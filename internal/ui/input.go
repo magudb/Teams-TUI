@@ -194,7 +194,7 @@ func (m *Model) sidebarKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	sel := m.sideSel[m.section]
-	isTeamItem := strings.HasPrefix(sel, "team:") || strings.HasPrefix(sel, "chan:") || sel == "hidden:"
+	isTeamItem := strings.HasPrefix(sel, "team:") || strings.HasPrefix(sel, "chan:") || strings.HasPrefix(sel, "fav:chan:") || strings.HasPrefix(sel, "u:chan:") || sel == "hidden:"
 	switch {
 	case k == "n" && (m.section == SecChat || m.section == SecTeams):
 		m.openPeoplePicker("New chat", true, "")
@@ -226,9 +226,13 @@ func (m *Model) sidebarKey(msg tea.KeyMsg) tea.Cmd {
 			if strings.HasPrefix(sel, "team:") {
 				m.toggleHiddenTeam(strings.TrimPrefix(sel, "team:"))
 			}
-		case "m":
+		case "p":
 			if strings.HasPrefix(sel, "chan:") {
-				id := strings.TrimPrefix(sel, "chan:")
+				m.toggleFavorite(sel)
+			}
+		case "m":
+			if bare := strings.TrimPrefix(strings.TrimPrefix(sel, "u:"), "fav:"); strings.HasPrefix(bare, "chan:") {
+				id := strings.TrimPrefix(bare, "chan:")
 				for _, t := range m.teams {
 					for _, ch := range m.channels[t.ID] {
 						if ch.ID == id {
@@ -250,8 +254,7 @@ func (m *Model) sidebarKey(msg tea.KeyMsg) tea.Cmd {
 		case ".", " ":
 			m.openChatActions(c)
 		case "p":
-			m.st.TogglePin(c.ID)
-			_ = m.st.Save()
+			m.toggleFavorite("chat:" + c.ID)
 		case "m":
 			m.st.Muted["chat:"+c.ID] = !m.st.Muted["chat:"+c.ID]
 			_ = m.st.Save()
@@ -302,19 +305,21 @@ func (m *Model) sidebarKey(msg tea.KeyMsg) tea.Cmd {
 				m.files = nil
 				return m.loadFiles()
 			}
-		case "r":
-			m.fileStack = nil
-			if m.filesKey == "root" {
-				m.filesKey = ""
-			} else {
-				m.filesKey = "root"
-			}
-			m.files = nil
-			return m.loadFiles()
+		case "u":
+			m.uploadPrompt()
+		case "enter", "right", "l":
+			m.setFocus(FocusMessages)
 		}
 	case SecActivity:
-		if k == "c" {
+		if k == "m" || k == "c" {
 			m.markAllActivityRead()
+		}
+	case SecSettings:
+		if k == "enter" || k == "right" || k == "l" {
+			m.settingsJump(strings.TrimPrefix(m.sideSel[SecSettings], "set:"))
+		}
+		if k == "ctrl+s" {
+			m.saveSettings()
 		}
 	}
 	return nil
@@ -328,15 +333,99 @@ func (m *Model) markAllActivityRead() {
 
 // sideFollow previews the selection in the main pane where it is cheap to do so.
 func (m *Model) sideFollow() tea.Cmd {
+	sel := m.sideSel[m.section]
 	switch m.section {
 	case SecFiles:
 		m.conv = nil
+		if strings.HasPrefix(sel, "loc:") && sel != m.fileLoc {
+			return m.openLocation(sel)
+		}
+	case SecSettings:
+		if strings.HasPrefix(sel, "set:") {
+			sec := strings.TrimPrefix(sel, "set:")
+			for i, r := range m.settingsRows() {
+				if r.section == sec && r.change != nil {
+					m.setSel = i
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// filesKey handles the Files table when the main pane has focus.
+func (m *Model) filesKey(k string) tea.Cmd {
+	files := m.visibleFiles()
+	switch k {
+	case "up", "k":
+		m.fileSel = max(0, m.fileSel-1)
+	case "down", "j":
+		m.fileSel = min(len(files)-1, m.fileSel+1)
+	case "g", "home":
+		m.fileSel = 0
+	case "G", "end":
+		m.fileSel = max(0, len(files)-1)
+	case "enter", "o":
+		return m.fileAction("open", m.selectedFile())
+	case "d":
+		return m.fileAction("download", m.selectedFile())
+	case "y":
+		return m.fileAction("copy", m.selectedFile())
+	case "u":
+		m.uploadPrompt()
+	case "/":
+		m.openPrompt("Filter files", "Part of a file name", m.fileFilter, func(m *Model, q string) tea.Cmd {
+			m.fileFilter = strings.TrimSpace(q)
+			m.fileSel = 0
+			return nil
+		})
+	case "backspace":
+		if len(m.fileStack) > 0 {
+			m.fileStack = m.fileStack[:len(m.fileStack)-1]
+			m.files = nil
+			m.fileSel = 0
+			return m.loadFiles()
+		}
+	case "esc", "left", "h", "tab":
+		m.setFocus(FocusSidebar)
+	case "?":
+		m.openHelp()
+	case "q":
+		return tea.Quit
 	}
 	return nil
 }
 
 func (m *Model) messagesKey(msg tea.KeyMsg) tea.Cmd {
 	k := msg.String()
+	switch {
+	case m.section == SecSettings:
+		if k == "q" || k == "?" || k == "tab" || k == "shift+tab" {
+			if c, ok := m.commonKey(k); ok {
+				return c
+			}
+		}
+		return m.settingsKey(k)
+	case m.section == SecFiles && m.conv == nil:
+		return m.filesKey(k)
+	case m.meetingMode():
+		switch k {
+		case "esc":
+			m.leaveMeetingView()
+			m.conv = nil
+			m.setFocus(FocusSidebar)
+			return nil
+		case "p":
+			m.showPeople = !m.showPeople
+			m.invalidateRender()
+			return nil
+		case "x":
+			return m.showTranscript(m.meetingEvent())
+		case "R":
+			return m.downloadRecording(m.meetingEvent())
+		}
+	}
 	cv := m.activeConv()
 	if cv == nil {
 		m.setFocus(FocusSidebar)
@@ -406,6 +495,13 @@ func (m *Model) messagesKey(msg tea.KeyMsg) tea.Cmd {
 		return m.msgAction("more")
 	case "A":
 		return m.msgAction("card")
+	case "T":
+		if sel := cv.selected(); sel != nil {
+			if l := messageLink(cv.ref, sel, m.svc.TenantID()); l != "" {
+				m.setToast("Opening in Teams…", false)
+				return m.openLink(l)
+			}
+		}
 	case "1", "2", "3", "4", "5", "6":
 		if sel := cv.selected(); sel != nil && !strings.HasPrefix(sel.ID, "tmp:") {
 			return m.toggleReaction(cv.ref, sel.ID, quickReactions[k[0]-'1'])
@@ -570,7 +666,7 @@ func (m *Model) sidebarDrag(msg tea.MouseMsg) tea.Cmd {
 }
 
 func (m *Model) openItemActions(key string) {
-	key = strings.TrimPrefix(key, "u:")
+	key = strings.TrimPrefix(strings.TrimPrefix(key, "u:"), "fav:")
 	switch {
 	case strings.HasPrefix(key, "chat:"):
 		if c := m.chatByID(strings.TrimPrefix(key, "chat:")); c != nil {
@@ -579,6 +675,11 @@ func (m *Model) openItemActions(key string) {
 	case strings.HasPrefix(key, "team:"):
 		if t := m.teamByID(strings.TrimPrefix(key, "team:")); t != nil {
 			m.openTeamActions(*t)
+		}
+	case strings.HasPrefix(key, "chan:"):
+		if fk := m.favoriteKey(key); fk != "" {
+			parts := strings.SplitN(strings.TrimPrefix(fk, "chan:"), ":", 2)
+			m.openChannelActions(model.ConvRef{Kind: model.KindChannel, TeamID: parts[0], ChannelID: parts[1]})
 		}
 	}
 }
@@ -633,7 +734,42 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 
 	// sidebar header buttons
-	for _, id := range []string{"filter", "newchat", "refresh", "prevday", "today", "nextday", "newmeeting", "filesmode", "readall"} {
+	if in("hdr:newmeeting") {
+		m.openMeetingForm("")
+		return nil, true
+	}
+	if in("hdr:filesfilter") {
+		return m.filesKey("/"), true
+	}
+	if in("set:signout") {
+		rows := m.settingsRows()
+		return rows[0].change(m), true
+	}
+	if m.section == SecSettings {
+		for i := range m.settingsRows() {
+			if in("setrow:" + itoa(i)) {
+				m.setSel = i
+				m.focus = FocusMessages
+				if r := m.settingsRows()[i]; r.change != nil {
+					return r.change(m), true
+				}
+				return nil, true
+			}
+		}
+	}
+	if m.section == SecFiles && m.conv == nil {
+		for i := range m.visibleFiles() {
+			if in("file:row:" + itoa(i)) {
+				if m.fileSel == i && m.focus == FocusMessages {
+					return m.fileAction("open", m.selectedFile()), true
+				}
+				m.fileSel = i
+				m.focus = FocusMessages
+				return nil, true
+			}
+		}
+	}
+	for _, id := range []string{"filter", "newchat", "refresh", "prevday", "today", "nextday", "newmeeting", "filesmode", "readall", "upload"} {
 		if !in("sb:" + id) {
 			continue
 		}
@@ -655,16 +791,14 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 		case "newmeeting":
 			m.openMeetingForm("")
 		case "filesmode":
-			m.fileStack = nil
-			if m.filesKey == "root" {
-				m.filesKey = ""
-			} else {
-				m.filesKey = "root"
+			if m.fileLoc == "loc:root" {
+				return m.openLocation("loc:recent"), true
 			}
-			m.files = nil
-			return m.loadFiles(), true
+			return m.openLocation("loc:root"), true
 		case "readall":
 			m.markAllActivityRead()
+		case "upload":
+			m.uploadPrompt()
 		}
 		return nil, true
 	}
@@ -808,7 +942,7 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	}
-	for _, id := range []string{"bold", "italic", "code", "emoji", "attach", "important", "subject", "send"} {
+	for _, id := range []string{"bold", "italic", "code", "emoji", "attach", "important", "subject", "send", "mention", "commands"} {
 		if !in("tb:" + id) {
 			continue
 		}
@@ -854,6 +988,13 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 			})
 		case "send":
 			return m.submitCompose(), true
+		case "mention":
+			c.ta.InsertString("@")
+			c.updateMentionCands()
+		case "commands":
+			if c.ta.Value() == "" {
+				c.ta.InsertString("/")
+			}
 		}
 		return nil, true
 	}
@@ -873,6 +1014,9 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 			continue
 		}
 		e := m.selectedEvent()
+		if m.meetingMode() {
+			e = m.meetingEvent()
+		}
 		switch a {
 		case "chat":
 			return m.openMeetingChat(e), true
@@ -906,6 +1050,10 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 func (m *Model) openChannelActions(ref model.ConvRef) {
 	r := ref
 	r.ThreadID = ""
+	favLabel := "★ Add to favorites"
+	if m.st.IsFavorite("chan:" + r.TeamID + ":" + r.ChannelID) {
+		favLabel = "☆ Remove from favorites"
+	}
 	items := []modalItem{
 		{label: "📝 New post with subject", run: func(m *Model) tea.Cmd {
 			m.openPrompt("Post subject", "Subject", "", func(m *Model, s string) tea.Cmd {
@@ -922,6 +1070,7 @@ func (m *Model) openChannelActions(ref model.ConvRef) {
 			m.openMembers(c)
 			return nil
 		}},
+		{label: favLabel, run: func(m *Model) tea.Cmd { m.toggleFavorite("chan:" + r.ChannelID); return nil }},
 		{label: "🔕 Toggle mute", run: func(m *Model) tea.Cmd {
 			m.st.Muted[r.Key()] = !m.st.Muted[r.Key()]
 			_ = m.st.Save()

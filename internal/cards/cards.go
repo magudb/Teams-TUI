@@ -40,6 +40,8 @@ type Styles struct {
 	Accent, Good, Warning, Attention                 lipgloss.Style
 	Button, ButtonPositive, ButtonDanger, ButtonDead lipgloss.Style
 	Border, Input                                    lipgloss.Style
+	TitleBar, TableHeader, InputBox                  lipgloss.Style // bar fills
+	Lock, External                                   string         // glyphs for bot-only and link buttons
 }
 
 // ActionType classifies what a card button does.
@@ -120,8 +122,11 @@ type Options struct {
 	State  *State
 	// Mark wraps a button label so the caller can make it clickable.
 	Mark func(key, label string) string
-	// Frame draws a rounded border around the card.
+	// Frame draws the card as a block: an inverse title bar followed by the
+	// body (the caller paints the body background).
 	Frame bool
+	// Label is shown on the right of the title bar (e.g. the app name).
+	Label string
 	// IsMe reports whether a mentioned name refers to the current user.
 	IsMe func(name string) bool
 }
@@ -135,10 +140,11 @@ type Result struct {
 }
 
 type renderer struct {
-	opt   Options
-	s     Styles
-	res   Result
-	stack []string // ids being rendered (cycle guard)
+	opt       Options
+	s         Styles
+	res       Result
+	barTitle  string
+	botTitles []string
 }
 
 // Render renders a card attachment. content is the attachment's JSON content.
@@ -151,7 +157,7 @@ func Render(contentType, content string, opt Options) (Result, bool) {
 	}
 	inner := opt.Width
 	if opt.Frame {
-		inner -= 4
+		inner -= 2 // one column of padding on each side
 	}
 	if inner < 12 {
 		return Result{}, false
@@ -168,6 +174,9 @@ func Render(contentType, content string, opt Options) (Result, bool) {
 	var lines []string
 	switch {
 	case contentType == TypeAdaptive || str(card, "type") == "AdaptiveCard":
+		if opt.Frame {
+			r.barTitle = takeHeading(card)
+		}
 		lines = r.adaptive(card, inner, "")
 	case contentType == TypeHero || contentType == TypeThumbnail || contentType == TypeSignin:
 		lines = r.hero(card, inner)
@@ -186,30 +195,49 @@ func Render(contentType, content string, opt Options) (Result, bool) {
 	if len(lines) == 0 {
 		return Result{}, false
 	}
+	if len(r.botTitles) > 0 {
+		lines = append(lines, r.s.Subtle.Render(ansi.Truncate(strings.Join(r.botTitles, "/")+" go to the bot. Press T to respond in Teams.", inner, "…")))
+	}
 	if opt.Frame {
-		lines = frame(lines, opt.Width, r.s.Border, accentFor(card, r.s))
+		title := r.barTitle
+		if title == "" {
+			title = r.res.Title
+		}
+		if title == "" {
+			title = "card"
+		}
+		title = strings.ToUpper(reTags.ReplaceAllString(title, ""))
+		label := opt.Label
+		lw := ansi.StringWidth(label)
+		bar := " " + ansi.Truncate(title, max(4, opt.Width-lw-4), "…")
+		bar = fit(bar, opt.Width-lw-1) + label + " "
+		out := []string{r.s.TitleBar.Render(fit(bar, opt.Width))}
+		for _, l := range lines {
+			out = append(out, " "+fit(l, inner)+" ")
+		}
+		lines = out
 	}
 	r.res.Lines = lines
 	return r.res, true
 }
 
-func accentFor(card map[string]any, s Styles) lipgloss.Style {
-	if c := str(card, "themeColor"); c != "" {
-		if !strings.HasPrefix(c, "#") {
-			c = "#" + c
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(c))
+// takeHeading removes a leading heading TextBlock from the card body and
+// returns its text, so it can be shown in the title bar.
+func takeHeading(card map[string]any) string {
+	body, _ := card["body"].([]any)
+	if len(body) == 0 {
+		return ""
 	}
-	return s.Border
-}
-
-func frame(lines []string, w int, border, accent lipgloss.Style) []string {
-	inner := w - 4
-	out := []string{border.Render("╭" + strings.Repeat("─", w-2) + "╮")}
-	for _, l := range lines {
-		out = append(out, accent.Render("│")+" "+fit(l, inner)+" "+border.Render("│"))
+	first, ok := body[0].(map[string]any)
+	if !ok || str(first, "type") != "TextBlock" {
+		return ""
 	}
-	return append(out, border.Render("╰"+strings.Repeat("─", w-2)+"╯"))
+	size := strings.ToLower(str(first, "size"))
+	if strings.ToLower(str(first, "style")) != "heading" && size != "large" && size != "extralarge" && strings.ToLower(str(first, "weight")) != "bolder" {
+		return ""
+	}
+	card["body"] = body[1:]
+	return str(first, "text")
 }
 
 // ---- JSON helpers ---------------------------------------------------------------

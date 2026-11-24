@@ -33,10 +33,13 @@ func (m *Model) orderedTeams() (visible, hidden []model.Team) {
 // their team). ok is false for items that can't be reordered.
 func (m *Model) reorderGroup(key string) (group, id string, ok bool) {
 	switch {
+	case strings.HasPrefix(key, "fav:"):
+		if fk := m.favoriteKey(key); fk != "" && m.st.IsFavorite(fk) {
+			return "fav", fk, true
+		}
 	case strings.HasPrefix(key, "chat:"):
-		id = strings.TrimPrefix(key, "chat:")
-		if m.st.IsPinned(id) {
-			return "pinned", id, true
+		if m.st.IsFavorite(key) {
+			return "fav", key, true
 		}
 	case strings.HasPrefix(key, "team:"):
 		id = strings.TrimPrefix(key, "team:")
@@ -58,8 +61,8 @@ func (m *Model) reorderGroup(key string) (group, id string, ok bool) {
 
 func (m *Model) groupOrder(group string) []string {
 	switch group {
-	case "pinned":
-		return append([]string(nil), m.st.PinOrder...)
+	case "fav":
+		return append([]string(nil), m.st.Favorites...)
 	case "teams":
 		visible, _ := m.orderedTeams()
 		ids := make([]string, len(visible))
@@ -73,8 +76,8 @@ func (m *Model) groupOrder(group string) []string {
 
 func (m *Model) setGroupOrder(group string, order []string) {
 	switch group {
-	case "pinned":
-		m.st.PinOrder = order
+	case "fav":
+		m.st.Favorites = order
 	case "teams":
 		// keep hidden teams' relative positions after the visible ones
 		_, hidden := m.orderedTeams()
@@ -90,8 +93,8 @@ func (m *Model) setGroupOrder(group string, order []string) {
 func (m *Model) moveBy(key string, delta int) {
 	group, id, ok := m.reorderGroup(key)
 	if !ok {
-		if strings.HasPrefix(key, "chat:") {
-			m.setToast("Pin a chat to reorder it (p)", false)
+		if strings.HasPrefix(key, "chat:") || strings.HasPrefix(key, "u:") {
+			m.setToast("Add it to favorites (p) to reorder it", false)
 		}
 		return
 	}
@@ -104,6 +107,9 @@ func (m *Model) moveBy(key string, delta int) {
 	}
 	if group == "teams" {
 		m.sideSel[m.section] = "team:" + id
+	}
+	if group == "fav" {
+		m.sideSel[m.section] = favSideKey(id)
 	}
 }
 
@@ -123,6 +129,9 @@ func (m *Model) dropOn(dragKey, targetKey string) bool {
 			m.setGroupOrder(g1, model.MoveInOrder(order, id1, i))
 			if g1 == "teams" {
 				m.sideSel[m.section] = "team:" + id1
+			}
+			if g1 == "fav" {
+				m.sideSel[m.section] = favSideKey(id1)
 			}
 			return true
 		}
@@ -170,4 +179,15 @@ func (m *Model) teamByID(id string) *model.Team {
 		}
 	}
 	return nil
+}
+
+// favSideKey maps a favorites key to its sidebar item key.
+func favSideKey(fk string) string {
+	if strings.HasPrefix(fk, "chan:") {
+		parts := strings.SplitN(strings.TrimPrefix(fk, "chan:"), ":", 2)
+		if len(parts) == 2 {
+			return "fav:chan:" + parts[1]
+		}
+	}
+	return "fav:" + fk
 }

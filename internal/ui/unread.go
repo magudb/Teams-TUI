@@ -18,6 +18,7 @@ type chanActivity struct {
 	from    string
 	preview string
 	msgID   string
+	count   int // posts and replies from others since you last looked
 }
 
 type channelPollMsg struct {
@@ -95,6 +96,14 @@ func (m *Model) noteChannelMessages(ref model.ConvRef, msgs []model.Message, vie
 		return
 	}
 	prev, had := m.chanAct[key]
+	seenAt := m.st.Seen[key]
+	for _, r := range msgs {
+		for _, x := range append([]model.Message{r}, r.Replies...) {
+			if x.From.ID != m.me.ID && x.MessageType == "message" && !x.Deleted && x.Created.After(seenAt) {
+				act.count++
+			}
+		}
+	}
 	m.chanAct[key] = act
 	if _, seen := m.st.Seen[key]; !seen || viewing {
 		// first time we see this channel (don't flood Unread), or it's open
@@ -104,8 +113,25 @@ func (m *Model) noteChannelMessages(ref model.ConvRef, msgs []model.Message, vie
 		}
 	}
 	if had && act.latest.After(prev.latest) && !viewing {
-		title := act.from + " in " + m.convTitle(ref)
-		m.addActivity(activityItem{at: act.latest, kind: "message", title: title, preview: act.preview, ref: ref, msgID: act.msgID})
+		replied := false
+		for _, r := range msgs {
+			if r.From.ID != m.me.ID {
+				continue
+			}
+			for _, x := range r.Replies {
+				if x.From.ID != m.me.ID && x.Created.After(prev.latest) {
+					th := ref
+					th.ThreadID = r.ID
+					m.addActivity(activityItem{at: x.Created, kind: "reply", title: firstName(x.From.DisplayName) + " replied",
+						preview: m.convTitle(ref) + ": " + htmltext.Plain(x.Body), ref: th, msgID: x.ID})
+					replied = true
+				}
+			}
+		}
+		if !replied {
+			m.addActivity(activityItem{at: act.latest, kind: "message", title: firstName(act.from) + " posted",
+				preview: m.convTitle(ref) + ": " + act.preview, ref: ref, msgID: act.msgID})
+		}
 	}
 	// notify on new mentions of me in channels
 	for _, r := range msgs {
@@ -169,92 +195,7 @@ func (m *Model) teamName(id string) string {
 	return ""
 }
 
-// combinedItems builds the combined Chat tab: Unread, Channels, Chats.
-func (m *Model) combinedItems(w int) []sideItem {
-	s := m.s
-	var items []sideItem
-	section := func(id, title string, count int) bool {
-		collapsed := m.st.Expanded["collapsed:"+id]
-		arrow := "▾"
-		if collapsed {
-			arrow = "▸"
-		}
-		label := strings.ToUpper(title)
-		if count > 0 {
-			label += " (" + itoa(count) + ")"
-		}
-		if len(items) > 0 {
-			items = append(items, sideItem{lines: []string{""}})
-		}
-		items = append(items, sideItem{key: "sec:" + id, selectable: true,
-			lines: []string{s.Faint.Render(trunc(" "+arrow+" "+label, w))},
-			open: func(m *Model) tea.Cmd {
-				m.st.Expanded["collapsed:"+id] = !m.st.Expanded["collapsed:"+id]
-				_ = m.st.Save()
-				return nil
-			}})
-		return !collapsed
-	}
-
-	// Unread: chats and channels with new messages
-	var unreadChats []model.Chat
-	for _, c := range m.chats {
-		if c.Unread(m.me.ID) && !m.st.Muted["chat:"+c.ID] && m.chatMatchesFilter(c) {
-			unreadChats = append(unreadChats, c)
-		}
-	}
-	model.SortChats(unreadChats)
-	unreadChs := m.unreadChannels()
-	if n := len(unreadChats) + len(unreadChs); n > 0 {
-		if section("unread", "Unread", n) {
-			for _, ch := range unreadChs {
-				items = append(items, m.unreadChannelItem(ch, w))
-			}
-			for _, c := range unreadChats {
-				it := m.chatItem(c, w)
-				id := c.ID
-				it.key = "u:" + it.key
-				it.open = func(m *Model) tea.Cmd {
-					m.sideSel[SecChat] = "chat:" + id
-					return m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: id})
-				}
-				items = append(items, it)
-			}
-		}
-	}
-
-	if section("channels", "Channels", 0) {
-		items = append(items, m.teamTreeItems(w)...)
-	}
-	if section("chats", "Chats", 0) {
-		items = append(items, m.chatListItems(w, true)...)
-	}
-	return items
-}
-
 func (m *Model) chatMatchesFilter(c model.Chat) bool {
 	q := strings.ToLower(strings.TrimSpace(m.chatFilter.Value()))
 	return q == "" || strings.Contains(strings.ToLower(c.Title(m.me.ID)), q)
-}
-
-func (m *Model) unreadChannelItem(ch model.Channel, w int) sideItem {
-	s := m.s
-	act := m.chanAct[chanKey(ch.TeamID, ch.ID)]
-	icon := "#"
-	if ch.MembershipType == "private" {
-		icon = "🔒"
-	}
-	name := s.Bold.Render(trunc(ch.DisplayName, w/2)) + s.Faint.Render(" · "+trunc(m.teamName(ch.TeamID), w/3))
-	l1 := spread(" "+s.Faint.Render(icon)+" "+name, s.Accent.Bold(true).Render("● ")+s.Faint.Render(relTime(act.latest, m.cfg.TimeFormat))+" ", w)
-	who := ""
-	if act.from != "" {
-		who = strings.Fields(act.from)[0] + ": "
-	}
-	l2 := "   " + s.Text.Render(trunc(plainOneLine(who+act.preview), w-4))
-	teamID, chID := ch.TeamID, ch.ID
-	return sideItem{key: "u:chan:" + ch.ID, selectable: true, lines: []string{l1, l2}, open: func(m *Model) tea.Cmd {
-		m.sideSel[SecChat] = "chan:" + chID
-		m.st.Expanded[teamID] = true
-		return m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: teamID, ChannelID: chID})
-	}}
 }

@@ -43,9 +43,10 @@ func TestApprovalCard(t *testing.T) {
 	out := plain(res)
 	t.Log("\n" + out)
 	checkWidth(t, res, 70)
-	for _, want := range []string{"╭", "Approval requested: Contract renewal", "Sofie Jensen requested approval",
-		"Submitted Fri, 20 Nov 2026", "Customer", "Contoso A/S", "DKK 125,000", "[ Add a comment", "Comment",
-		"[ Approve ]", "[ Reject ]", "[ ⇅ Details ]", "[ ▸ Delegate ]", "[ ↗ View in Approvals ]", "📷 Sofie"} {
+	for _, want := range []string{"APPROVAL REQUESTED: CONTRACT RENEWAL", "Sofie Jensen requested approval",
+		"Submitted Fri, 20 Nov 2026", "Customer", "Contoso A/S", "DKK 125,000", "Add a comment · read-only", "Comment",
+		"🔒 Approve", "🔒 Reject", "Details ⇅", "Delegate ▾", "View in Approvals ↗", "📷 Sofie",
+		"Approve/Reject go to the bot. Press T to respond in Teams."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -68,7 +69,7 @@ func TestApprovalCard(t *testing.T) {
 	out = plain(res)
 	t.Log("\n" + out)
 	checkWidth(t, res, 70)
-	for _, want := range []string{"5% uplift", "[ ▾ Delegate ]", "Delegate to", "Lars Nielsen", "▾]"} {
+	for _, want := range []string{"5% uplift", "Delegate ▴", "Delegate to", "Lars Nielsen ▾"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("after actions missing %q", want)
 		}
@@ -103,7 +104,7 @@ func TestConnectorCard(t *testing.T) {
 	out := plain(res)
 	t.Log("\n" + out)
 	checkWidth(t, res, 60)
-	for _, want := range []string{"Pull request opened", "Alex Morgan opened a pull request", "Branch", "fix/billing-retry", "[ ↗ View pull request ]", "[ Approve ]"} {
+	for _, want := range []string{"PULL REQUEST OPENED", "Alex Morgan opened a pull request", "Branch", "fix/billing-retry", "View pull request ↗", "🔒 Approve"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -115,7 +116,7 @@ func TestConnectorCard(t *testing.T) {
 
 func TestHeroAndBadInput(t *testing.T) {
 	res, ok := Render(TypeHero, `{"title":"Lunch menu","subtitle":"Friday","text":"Pasta<br>Salad","buttons":[{"type":"openUrl","title":"Order","value":"https://x.example"}]}`, Options{Width: 40})
-	if !ok || !strings.Contains(plain(res), "Pasta") || !strings.Contains(plain(res), "[ ↗ Order ]") {
+	if !ok || !strings.Contains(plain(res), "Pasta") || !strings.Contains(plain(res), "[ Order ↗ ]") {
 		t.Fatalf("hero: %v\n%s", ok, plain(res))
 	}
 	if _, ok := Render(TypeAdaptive, `not json`, Options{Width: 40}); ok {

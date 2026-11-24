@@ -425,80 +425,75 @@ func toggle(cur, v string) string {
 
 // ---- view ------------------------------------------------------------------------
 
-func (m *Model) composeHeight() int {
-	h := m.compose.ta.Height() + 3 // border top/bottom + toolbar
-	if m.compose.editingID != "" || m.compose.quote != nil || m.compose.subject != "" {
-		h++
-	}
-	if len(m.compose.mCands) > 0 {
-		h += len(m.compose.mCands)
-	}
-	return h
-}
-
-func (m *Model) composeView(width int) string {
+// composeLines renders the compose area: optional mention candidates and
+// status line, the "› message" input, and a hint line with clickable tools.
+func (m *Model) composeLines(cv *convView, width int, side bool) []string {
 	c := &m.compose
 	s := m.s
-	focused := m.focus == FocusCompose
+	ic := s.ic
 	var lines []string
 
-	if len(c.mCands) > 0 {
-		for i, u := range c.mCands {
-			p, ok := m.presence[u.ID]
-			l := " " + s.presenceDot(p, ok) + " " + u.DisplayName
-			if i == c.mSel {
-				l = s.Sel.Render(padRight(" ▸ "+u.DisplayName, width))
-			}
-			lines = append(lines, zone.Mark("mention:"+itoa(i), padRight(l, width)))
+	for i, u := range c.mCands {
+		p, ok := m.presence[u.ID]
+		l := " " + s.presenceDot(p, ok) + " " + u.DisplayName
+		if i == c.mSel {
+			l = s.Sel.Render(padRight(" ▸ "+u.DisplayName, width))
 		}
+		lines = append(lines, zone.Mark("mention:"+itoa(i), padRight(l, width)))
 	}
 	switch {
 	case c.editingID != "":
-		lines = append(lines, s.Warn.Render(trunc("✎ Editing message — enter to save, esc to cancel", width)))
+		lines = append(lines, " "+s.Warn.Bold(true).Render(trunc(ic.Pencil+" Editing message · enter save · esc cancel", width-2)))
 	case c.quote != nil:
-		lines = append(lines, s.Muted.Render(trunc("↪ Replying to "+c.quote.From.DisplayName+": "+htmltext.Plain(c.quote.Body), width-4))+" "+zone.Mark("unquote", s.Danger.Render("✕")))
+		lines = append(lines, " "+s.Muted.Render(trunc(ic.Reply+" Replying to "+c.quote.From.DisplayName+": "+htmltext.Plain(c.quote.Body), width-6))+" "+zone.Mark("unquote", s.Accent.Render("✕")))
 	case c.subject != "":
-		lines = append(lines, s.Bold.Render(trunc("Subject: "+c.subject, width)))
+		lines = append(lines, " "+s.Bold.Render(trunc("Subject: "+c.subject, width-2)))
 	}
 
-	borderColor := s.t.Border
-	if focused {
-		borderColor = s.t.Accent
-	}
-	ac := m.activeConv()
 	switch {
-	case ac == nil:
+	case cv == nil:
 		c.ta.Placeholder = "Select a conversation"
-	case ac.ref.Kind == model.KindChannel && ac.ref.ThreadID != "":
-		c.ta.Placeholder = "Reply"
-	case ac.ref.Kind == model.KindChannel:
-		c.ta.Placeholder = "Start a post (/subject to add a subject)"
-	default:
-		c.ta.Placeholder = "Type a message"
-	}
-	box := lipglossBorder(borderColor).Width(width - 2).Render(c.ta.View())
-	lines = append(lines, strings.Split(box, "\n")...)
-
-	// toolbar
-	btn := func(id, label string, on bool) string {
-		st := s.Button
-		if on {
-			st = s.ButtonHot
+	case cv.ref.Kind == model.KindChannel && cv.ref.ThreadID != "":
+		c.ta.Placeholder = "Reply in thread"
+	case cv.ref.Kind == model.KindChannel:
+		name := "channel"
+		for _, ch := range m.channels[cv.ref.TeamID] {
+			if ch.ID == cv.ref.ChannelID {
+				name = ch.DisplayName
+			}
 		}
-		return zone.Mark("tb:"+id, st.Render(label))
+		c.ta.Placeholder = "Start a post in " + name
+	default:
+		c.ta.Placeholder = "Message " + m.convTitle(cv.ref)
 	}
-	left := []string{
-		btn("bold", "B", false), btn("italic", "I", false), btn("code", "</>", false),
-		btn("emoji", "☺", false), btn("attach", "📎", false),
-		btn("important", "!", c.importance != ""),
+	c.ta.FocusedStyle.Placeholder = s.Muted
+	c.ta.BlurredStyle.Placeholder = s.Muted
+	c.ta.FocusedStyle.Text = s.Text
+	c.ta.BlurredStyle.Text = s.Text
+	for i, l := range strings.Split(c.ta.View(), "\n") {
+		p := "  "
+		if i == 0 {
+			p = " " + s.Accent.Bold(true).Render(ic.Prompt) + " "
+		}
+		lines = append(lines, p+l)
 	}
-	if ac != nil && ac.ref.Kind == model.KindChannel && ac.ref.ThreadID == "" {
-		left = append(left, btn("subject", "Aa", c.subject != ""))
+
+	if !m.narrow() || len(c.attachments) > 0 || c.importance != "" {
+		tool := func(id, label string, on bool) string {
+			st := s.Muted
+			if on {
+				st = s.Accent.Bold(true)
+			}
+			return zone.Mark("tb:"+id, st.Render(label))
+		}
+		parts := []string{tool("attach", ic.Clip+" attach", false), tool("mention", "@ mention", false), tool("commands", "/ commands", false)}
+		if c.importance != "" {
+			parts = append(parts, tool("important", "! "+c.importance, true))
+		}
+		for i, a := range c.attachments {
+			parts = append(parts, zone.Mark("unattach:"+itoa(i), s.ChipMine.Render(" "+ic.Clip+" "+trunc(a.Name, 18)+" ✕ ")))
+		}
+		lines = append(lines, " "+trunc(strings.Join(parts, s.Muted.Render(" ")), width-2))
 	}
-	for i, a := range c.attachments {
-		left = append(left, zone.Mark("unattach:"+itoa(i), s.Chip.Render(" 📎 "+trunc(a.Name, 20)+" ✕ ")))
-	}
-	right := btn("send", " Send ➤ ", strings.TrimSpace(c.ta.Value()) != "" || len(c.attachments) > 0)
-	lines = append(lines, spread(" "+strings.Join(left, "  "), right, width))
-	return strings.Join(lines, "\n")
+	return lines
 }

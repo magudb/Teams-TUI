@@ -162,7 +162,8 @@ func TestChatFlow(t *testing.T) {
 	press(t, m, "1")
 	s = screen(m)
 	dump(t, "04-react", s)
-	if !strings.Contains(s, "👍 1") {
+	last := m.conv.msgs[len(m.conv.msgs)-1]
+	if len(last.Reactions) != 1 || last.Reactions[0].Type != "👍" || !strings.Contains(s, " 1 ") {
 		t.Fatalf("reaction not shown:\n%s", s)
 	}
 
@@ -179,7 +180,7 @@ func TestChatFlow(t *testing.T) {
 	press(t, m, "ctrl+k")
 	s = screen(m)
 	dump(t, "05-palette", s)
-	if m.modal == nil || !strings.Contains(s, "Command palette") {
+	if m.modal == nil || !strings.Contains(s, "COMMAND PALETTE") {
 		t.Fatalf("palette not open:\n%s", s)
 	}
 	press(t, m, "esc")
@@ -207,7 +208,7 @@ func TestTeamsAndThread(t *testing.T) {
 	press(t, m, "enter")
 	s = screen(m)
 	dump(t, "12-thread", s)
-	if m.thread == nil || !strings.Contains(s, "Thread") || !strings.Contains(s, "Sofie, PM") {
+	if m.thread == nil || !strings.Contains(s, "THREAD") || !strings.Contains(s, "Sofie, PM") {
 		t.Fatalf("thread not open:\n%s", s)
 	}
 	checkSize(t, s, 160, 45)
@@ -266,7 +267,7 @@ func click(t *testing.T, m *Model, x, y int) {
 func TestMouse(t *testing.T) {
 	m := newTestModelCfg(t, 140, 40, classic)
 	m.View()
-	time.Sleep(50 * time.Millisecond) // zone manager is async
+	time.Sleep(200 * time.Millisecond) // zone manager is async
 	// click second chat in the sidebar
 	y := m.geo.sideList.y + 3
 	click(t, m, m.geo.sideList.x+5, y)
@@ -274,9 +275,9 @@ func TestMouse(t *testing.T) {
 		t.Fatal("click did not open chat")
 	}
 	m.View()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	// click the Teams rail entry
-	click(t, m, 3, 8)
+	click(t, m, 2, 5) // rail: Activity y1, Chat y3, Teams y5
 	if m.section != SecTeams {
 		t.Fatalf("section = %v, want Teams", m.section)
 	}
@@ -295,39 +296,73 @@ func rowOf(m *Model, key string) int {
 	return -1
 }
 
-func TestPinnedOrderAndDrag(t *testing.T) {
+func TestFavoritesOrderAndDrag(t *testing.T) {
 	m := newTestModel(t, 140, 40)
-	// pin three chats: c3, c1, c4 (pin order = top-to-bottom)
+	// favorites: three chats and a channel, top to bottom in the order added
 	for _, id := range []string{"c3", "c1", "c4"} {
 		m.st.TogglePin(id)
 	}
-	pinned, recent := m.sortedChats()
-	if got := ids(pinned); got != "c3,c1,c4" {
-		t.Fatalf("pinned order %s", got)
+	m.sideSel[SecChat] = "chan:ch2"
+	m.sideTouched[SecChat] = true
+	m.toggleFavorite("chan:ch2")
+	if got := strings.Join(m.st.Favorites, ","); got != "chat:c3,chat:c1,chat:c4,chan:t1:ch2" {
+		t.Fatalf("favorites %s", got)
 	}
-	// recent sorted by last activity: c2 (40m ago) before c5 (a week ago)
+	s := screen(m)
+	dump(t, "80-favorites", s)
+	if !strings.Contains(s, "Favorites") || strings.Index(s, "Favorites") > strings.Index(s, "Channels") {
+		t.Fatalf("Favorites should be the first section:\n%s", s)
+	}
+	if !strings.Contains(s, "Backend · Engineering") {
+		t.Fatalf("favorite channel missing:\n%s", s)
+	}
+	// favorites are not repeated under Recent
+	_, recent := m.sortedChats()
 	if got := ids(recent); got != "c2,19:meeting_retro@thread.v2,c5" {
 		t.Fatalf("recent order %s", got)
 	}
 	// keyboard: move c4 up
-	m.sideSel[SecChat] = "chat:c4"
+	m.sideSel[SecChat] = "fav:chat:c4"
 	m.sideTouched[SecChat] = true
 	press(t, m, "K")
-	if got := strings.Join(m.st.PinOrder, ","); got != "c3,c4,c1" {
+	if got := strings.Join(m.st.Favorites, ","); got != "chat:c3,chat:c4,chat:c1,chan:t1:ch2" {
 		t.Fatalf("after K: %s", got)
 	}
-	// mouse: drag c1 onto c3
+	// mouse: drag the channel onto c3 (top)
 	m.View()
-	from, to := rowOf(m, "chat:c1"), rowOf(m, "chat:c3")
+	from, to := rowOf(m, "fav:chan:ch2"), rowOf(m, "fav:chat:c3")
 	x := m.geo.sideList.x + 5
 	_, _ = m.Update(tea.MouseMsg{X: x, Y: from, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	_, _ = m.Update(tea.MouseMsg{X: x, Y: to, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	_, _ = m.Update(tea.MouseMsg{X: x, Y: to, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
-	if got := strings.Join(m.st.PinOrder, ","); got != "c1,c3,c4" {
+	if got := strings.Join(m.st.Favorites, ","); got != "chan:t1:ch2,chat:c3,chat:c4,chat:c1" {
 		t.Fatalf("after drag: %s", got)
 	}
 	if m.conv != nil {
 		t.Fatal("drag should not open a chat")
+	}
+	// opening a favorite keeps it selected
+	m.sideSel[SecChat] = "fav:chat:c1"
+	press(t, m, "l")
+	if m.conv == nil || m.conv.ref.ChatID != "c1" || m.sideSel[SecChat] != "fav:chat:c1" {
+		t.Fatalf("favorite did not open in place: %+v sel=%s", m.conv, m.sideSel[SecChat])
+	}
+	// p removes it again
+	m.setFocus(FocusSidebar)
+	press(t, m, "p")
+	if m.st.IsFavorite("chat:c1") {
+		t.Fatal("p should remove the favorite")
+	}
+}
+
+func TestLegacyPinsMigrate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/state.json", []byte(`{"pin_order":["a","b"],"pinned":{"c":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := state.Load(dir)
+	if got := strings.Join(st.Favorites, ","); got != "chat:a,chat:b,chat:c" || len(st.PinOrder) != 0 {
+		t.Fatalf("migrated favorites = %s", got)
 	}
 }
 
@@ -379,7 +414,7 @@ func TestMeetingCompanion(t *testing.T) {
 	press(t, m, "up") // triggers selection change -> attendee resolution
 	s = screen(m)
 	dump(t, "40-meeting", s)
-	if !strings.Contains(s, "LIVE") || !strings.Contains(s, "Attendees (4)") || !strings.Contains(s, "Noah Petersen") {
+	if !strings.Contains(s, "live") || !strings.Contains(s, "Attendees (4)") || !strings.Contains(s, "Noah Petersen") {
 		t.Fatalf("meeting details missing:\n%s", s)
 	}
 	if _, ok := m.emailUsers["noah@contoso.example"]; !ok {
@@ -387,10 +422,18 @@ func TestMeetingCompanion(t *testing.T) {
 	}
 	// meeting chat
 	press(t, m, "c")
-	if m.conv == nil || m.conv.ref.ChatID != "c2" || m.section != SecChat {
-		t.Fatalf("meeting chat not opened: %+v", m.conv)
+	if m.conv == nil || m.conv.ref.ChatID != "c2" || !m.meetingMode() {
+		t.Fatalf("live meeting should open the meeting view: %+v", m.conv)
+	}
+	s = screen(m)
+	dump(t, "43-meeting-view", s)
+	for _, want := range []string{"DAILY STAND-UP", "LIVE", "Audio and video run in the Teams app", "People", "After the meeting", "alt+j Join in Teams"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("meeting view missing %q:\n%s", want, s)
+		}
 	}
 	// past meeting: transcript
+	press(t, m, "esc")
 	press(t, m, "esc")
 	press(t, m, "alt+4")
 	press(t, m, "[") // yesterday
@@ -429,16 +472,13 @@ func TestCombinedUnread(t *testing.T) {
 	}
 	s := screen(m)
 	dump(t, "50-combined", s)
-	for _, want := range []string{"UNREAD (2)", "CHANNELS", "CHATS", "Engineering", "Launch squad"} {
+	for _, want := range []string{"Unread", "Channels", "Recent", "Engineering", "Launch squad"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q:\n%s", want, s)
 		}
 	}
-	if strings.Index(s, "UNREAD") > strings.Index(s, "CHANNELS") || strings.Index(s, "CHANNELS") > strings.Index(s, "CHATS") {
+	if strings.Index(s, "Unread") > strings.Index(s, "Channels") || strings.Index(s, "Channels") > strings.Index(s, "Recent") {
 		t.Fatalf("sections out of order:\n%s", s)
-	}
-	if strings.Contains(s, "Teams\n") && strings.Contains(s, "  Teams  ") {
-		t.Fatal("Teams rail entry should be hidden in combined mode")
 	}
 
 	// someone posts in Engineering › Backend
@@ -446,7 +486,7 @@ func TestCombinedUnread(t *testing.T) {
 	pollAllChannels(t, m)
 	s = screen(m)
 	dump(t, "51-combined-unread", s)
-	if len(m.unreadChannels()) != 1 || !strings.Contains(s, "UNREAD (3)") || !strings.Contains(s, "Deploy is green") {
+	if len(m.unreadChannels()) != 1 || !strings.Contains(s, "Backend · Engineering") || !strings.Contains(s, "Deploy is green") {
 		t.Fatalf("channel not unread:\n%s", s)
 	}
 	// open it from the Unread section
@@ -485,31 +525,31 @@ func TestConversationLayout(t *testing.T) {
 	if strings.Index(mine, "Sure") <= strings.Index(theirs, "Hi Alex")+20 {
 		t.Fatalf("own message should be right-aligned:\n%q\n%q", mine, theirs)
 	}
-	if !strings.Contains(s, "New messages") || !strings.Contains(s, "SJ") {
-		t.Fatalf("expected unread divider and avatar:\n%s", s)
+	if !strings.Contains(s, "New messages") || !strings.Contains(s, "Today") {
+		t.Fatalf("expected day chip and unread divider:\n%s", s)
 	}
 
 	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch1"}), 0)
 	s = screen(m)
 	dump(t, "61-cards", s)
-	for _, want := range []string{"╭", "💬 3 replies from", "Open thread ›", "↩ Reply"} {
+	for _, want := range []string{"3 replies · ", "open ›", "Reply"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("card missing %q:\n%s", want, s)
 		}
 	}
 	m.View()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	// click "Open thread ›"
 	var x, y int
 	for i, l := range strings.Split(screen(m), "\n") {
-		if j := strings.Index(l, "Open thread"); j >= 0 {
+		if j := strings.Index(l, "open ›"); j >= 0 {
 			x, y = ansi.StringWidth(l[:j])+2, i
 		}
 	}
 	click(t, m, x, y)
 	s = screen(m)
 	dump(t, "62-thread", s)
-	if m.thread == nil || !strings.Contains(s, "← # General") || !strings.Contains(s, "3 replies") {
+	if m.thread == nil || !strings.Contains(s, "THREAD") || !strings.Contains(s, "3 replies") {
 		t.Fatalf("thread not opened by click:\n%s", s)
 	}
 }
@@ -517,7 +557,7 @@ func TestConversationLayout(t *testing.T) {
 func clickText(t *testing.T, m *Model, text string) {
 	t.Helper()
 	m.View()
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	for i, l := range strings.Split(screen(m), "\n") {
 		if j := strings.Index(l, text); j >= 0 {
 			click(t, m, ansi.StringWidth(l[:j])+2, i)
@@ -532,17 +572,17 @@ func TestAdaptiveCardsInChat(t *testing.T) {
 	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: "c2"}), 0)
 	s := screen(m)
 	dump(t, "70-card-chat", s)
-	for _, want := range []string{"Approvals", "Approval requested: Contract renewal", "Contoso A/S", "[ Approve ]", "[ ▸ Delegate ]", "╭"} {
+	for _, want := range []string{"Approvals", "APPROVAL REQUESTED: CONTRACT RENEWAL", "Contoso A/S", "Approve", "Delegate ▾", "go to the bot. Press T"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q:\n%s", want, s)
 		}
 	}
-	clickText(t, m, "▸ Delegate")
+	clickText(t, m, "Delegate ▾")
 	s = screen(m)
 	if !strings.Contains(s, "Delegate to") {
 		t.Fatalf("show card did not expand:\n%s", s)
 	}
-	clickText(t, m, "[ Approve ]")
+	clickText(t, m, "Approve  ")
 	if m.modal == nil || !strings.Contains(screen(m), "must be sent from Teams") {
 		t.Fatalf("bot action should explain it needs Teams:\n%s", screen(m))
 	}
@@ -564,7 +604,7 @@ func TestAdaptiveCardsInChat(t *testing.T) {
 	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch2"}), 0)
 	s = screen(m)
 	dump(t, "71-card-channel", s)
-	if !strings.Contains(s, "Pull request opened") || !strings.Contains(s, "fix/billing-retry") {
+	if !strings.Contains(s, "PULL REQUEST OPENED") || !strings.Contains(s, "fix/billing-retry") {
 		t.Fatalf("connector card missing:\n%s", s)
 	}
 	checkSize(t, s, 150, 60)

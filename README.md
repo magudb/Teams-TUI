@@ -1,7 +1,12 @@
 # teams-tui
 
+[![CI](https://github.com/magudb/Teams-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/magudb/Teams-TUI/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/magudb/Teams-TUI?include_prereleases)](https://github.com/magudb/Teams-TUI/releases)
+
 A Microsoft Teams client for the terminal, written in Go with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 It talks to Microsoft 365 through the Microsoft Graph API. You can drive it fully from the keyboard or with the mouse.
+
+Download a binary for Linux, macOS or Windows (amd64 and arm64) from [Releases](https://github.com/magudb/Teams-TUI/releases), or build it yourself:
 
 ```
 go install github.com/magudb/Teams-TUI/cmd/teams-tui@latest   # or: go build -o bin/teams-tui ./cmd/teams-tui
@@ -35,6 +40,17 @@ teams-tui             # sign in with your Microsoft 365 account
 - Teams apps, tabs other than Files, and Loop components.
 - Bot buttons on cards (`Action.Submit` / `Action.Execute`) and card input fields. These go to the bot through the Bot Framework, which Graph can't call for you, so the app offers to open the message in Teams instead. Inputs are shown read-only.
 - Inline images can't be drawn in the terminal. Press `o` on the message to open them.
+
+## Look and feel
+
+The interface follows the *Terminal Chat Client* design (direction "Blocks"):
+- **Layout:** panes are separated by fills, not borders. A dark icon rail sits on the left, the sidebar has inverse header bars, and the main pane has a block-filled header.
+- **Messages and channels:** chat messages sit on filled blocks, and your own messages are right-aligned in inverse. Channel posts are blocks with a red reply bar that opens the thread.
+- **Status bar:** a powerline bar shows your presence, the next meeting and the key hints.
+- **Theme:** light paper by default, with a matching dark variant. Switch it in Settings or set `"theme": "dark"`.
+- **Icons:** Nerd Font glyphs, as in the design. Use a [Nerd Font](https://www.nerdfonts.com) in your terminal (any `… Nerd Font Mono`), or set `"icons": "ascii"`, or switch in Settings.
+
+Screens: sign-in, Activity, Chat, Teams and channels with threads, adaptive cards, Calendar, the live meeting view, Files, Search, the command palette (ctrl+k) and Settings (the gear in the rail). The layout adapts down to 80×24: a narrow rail, a shorter sidebar, and a thread that replaces the channel instead of opening beside it.
 
 ## Combined Chat tab
 
@@ -73,7 +89,7 @@ Graph doesn't expose the pins, custom team order or hidden teams you set in the 
 
 ## Signing in
 
-On the first run the app starts a **device-code** sign-in. It shows a code and opens `https://microsoft.com/devicelogin` in your browser. The token is cached in `~/.config/teams-tui/token.json` (mode 0600), and access tokens refresh on their own.
+On the first run the app shows a sign-in screen with a **device code**: `o` opens `microsoft.com/devicelogin`, `c` copies the code, `↑↓` picks a tenant, and `d` starts demo mode instead. The token is cached in `~/.config/teams-tui/token.json` (mode 0600), and access tokens refresh on their own.
 
 By default the app uses Microsoft's public *Microsoft Graph Command Line Tools* client id. Many tenants block that client or require admin consent for it. For an organisation it's better to register your own app:
 
@@ -102,9 +118,10 @@ Other commands: `teams-tui login`, `teams-tui logout`, `teams-tui config` (print
 | `poll_messages_seconds` / `poll_chats_seconds` / `poll_presence_seconds` | 5 / 15 / 60 | how often to poll |
 | `download_dir` | `~/Downloads` | |
 | `time_format` / `date_format` | `15:04` / `Mon 02 Jan` | Go time layouts |
-| `sidebar_width` | 34 | |
-| `theme` | `dark` | or `light` |
-| `ascii_icons` | `false` | use ASCII in the left rail if your font lacks emoji |
+| `sidebar_width` | 33 | |
+| `theme` | `light` | or `dark` |
+| `icons` | `nerd` | Nerd Font glyphs, or `ascii` if your terminal font has no Nerd Font symbols |
+| `meeting_reminder_minutes` | 5 | reminder before meetings |
 | `combined_chat` | `true` | channels and chats in one Chat tab (Unread → Channels → Chats) |
 | `poll_channel_seconds` | 4 | pause between background channel checks for unread tracking (0 = off) |
 
@@ -142,3 +159,15 @@ Layout:
 - `internal/auth`: device-code OAuth.
 - `internal/htmltext`: Teams HTML ⇄ styled terminal text and light markdown.
 - `internal/ui`: the Bubble Tea app. It uses bubblezone for mouse hit-testing.
+
+### CI and releases
+
+- **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests. It checks gofmt, `go vet` and `go mod tidy`. It runs the tests on Linux (with `-race`), macOS and Windows. It also builds every platform with GoReleaser and attaches the snapshot archives to the run.
+- **Releases** (`.github/workflows/release.yml`) run when you push a version tag. GoReleaser (`.goreleaser.yaml`) builds Linux, macOS and Windows binaries for amd64 and arm64 and publishes them with a changelog and `checksums.txt`:
+
+  ```
+  git tag -a v0.1.0 -m "v0.1.0"
+  git push origin v0.1.0
+  ```
+
+  Tags with a suffix (for example `v0.2.0-rc.1`) are published as pre-releases. The macOS binaries aren't signed or notarized.

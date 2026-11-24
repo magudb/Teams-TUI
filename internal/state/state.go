@@ -1,4 +1,4 @@
-// Package state persists small pieces of local UI state (pinned chats,
+// Package state persists small pieces of local UI state (favorites,
 // muted conversations, expanded teams, drafts).
 package state
 
@@ -12,14 +12,15 @@ import (
 
 // State is persisted to state.json in the config directory.
 type State struct {
-	Pinned    map[string]bool      `json:"pinned"`     // chat ids (legacy set)
-	PinOrder  []string             `json:"pin_order"`  // pinned chat ids, top to bottom
-	TeamOrder []string             `json:"team_order"` // custom team order (empty = server order)
-	Muted     map[string]bool      `json:"muted"`      // conv keys
-	Expanded  map[string]bool      `json:"expanded"`   // team ids
-	Hidden    map[string]bool      `json:"hidden"`     // team ids hidden from list
-	Drafts    map[string]string    `json:"drafts"`     // conv key -> draft
-	Seen      map[string]time.Time `json:"seen"`       // channel key -> when you last looked at it
+	Pinned    map[string]bool      `json:"pinned,omitempty"`    // legacy: pinned chat ids
+	PinOrder  []string             `json:"pin_order,omitempty"` // legacy: pinned chat ids in order
+	Favorites []string             `json:"favorites"`           // "chat:<id>" / "chan:<team>:<channel>", top to bottom
+	TeamOrder []string             `json:"team_order"`          // custom team order (empty = server order)
+	Muted     map[string]bool      `json:"muted"`               // conv keys
+	Expanded  map[string]bool      `json:"expanded"`            // team ids
+	Hidden    map[string]bool      `json:"hidden"`              // team ids hidden from list
+	Drafts    map[string]string    `json:"drafts"`              // conv key -> draft
+	Seen      map[string]time.Time `json:"seen"`                // channel key -> when you last looked at it
 	Section   string               `json:"section"`
 
 	path string
@@ -46,6 +47,16 @@ func Load(dir string) *State {
 		if on && !inOrder[id] {
 			s.PinOrder = append(s.PinOrder, id)
 		}
+	}
+	// pinned chats became favorites
+	if len(s.PinOrder) > 0 {
+		for _, id := range s.PinOrder {
+			if !s.IsFavorite("chat:" + id) {
+				s.Favorites = append(s.Favorites, "chat:"+id)
+			}
+		}
+		s.PinOrder = nil
+		s.Pinned = map[string]bool{}
 	}
 	if s.Muted == nil {
 		s.Muted = map[string]bool{}
@@ -79,25 +90,30 @@ func (s *State) Save() error {
 	return os.WriteFile(s.path, b, 0o600)
 }
 
-// IsPinned reports whether a chat is pinned.
-func (s *State) IsPinned(id string) bool {
-	for _, x := range s.PinOrder {
-		if x == id {
+// IsFavorite reports whether a chat ("chat:<id>") or channel
+// ("chan:<team>:<channel>") is a favorite.
+func (s *State) IsFavorite(key string) bool {
+	for _, x := range s.Favorites {
+		if x == key {
 			return true
 		}
 	}
 	return false
 }
 
-// TogglePin pins (at the bottom of the pinned list) or unpins a chat.
-func (s *State) TogglePin(id string) {
-	for i, x := range s.PinOrder {
-		if x == id {
-			s.PinOrder = append(s.PinOrder[:i], s.PinOrder[i+1:]...)
-			delete(s.Pinned, id)
+// ToggleFavorite adds key at the bottom of Favorites, or removes it.
+func (s *State) ToggleFavorite(key string) {
+	for i, x := range s.Favorites {
+		if x == key {
+			s.Favorites = append(s.Favorites[:i], s.Favorites[i+1:]...)
 			return
 		}
 	}
-	s.PinOrder = append(s.PinOrder, id)
-	s.Pinned[id] = true
+	s.Favorites = append(s.Favorites, key)
 }
+
+// IsPinned reports whether a chat is a favorite.
+func (s *State) IsPinned(id string) bool { return s.IsFavorite("chat:" + id) }
+
+// TogglePin toggles a chat as favorite.
+func (s *State) TogglePin(id string) { s.ToggleFavorite("chat:" + id) }

@@ -27,8 +27,14 @@ type Config struct {
 	TimeFormat           string `json:"time_format"`
 	DateFormat           string `json:"date_format"`
 	SidebarWidth         int    `json:"sidebar_width"`
-	Theme                string `json:"theme"` // "dark" (default) or "light"
-	ASCIIIcons           bool   `json:"ascii_icons"`
+	Theme                string `json:"theme"`                 // "dark" (default) or "light"
+	ASCIIIcons           bool   `json:"ascii_icons,omitempty"` // deprecated: use icons
+	// Icons is "nerd" (Nerd Font glyphs, as in the design) or "ascii".
+	Icons string `json:"icons"`
+	// MeetingReminderMinutes is how long before a meeting the reminder fires.
+	MeetingReminderMinutes int `json:"meeting_reminder_minutes"`
+	// Tenants remembers tenants signed in to, for the login tenant picker.
+	Tenants []string `json:"tenants,omitempty"`
 	// CombinedChat shows channels and chats in one Chat tab (Unread, Channels, Chats).
 	CombinedChat bool `json:"combined_chat"`
 	// PollChannelSeconds is the pause between background checks of single
@@ -40,20 +46,22 @@ type Config struct {
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		ClientID:             DefaultClientID,
-		Tenant:               "organizations",
-		DesktopNotifications: true,
-		Bell:                 false,
-		PollMessagesSeconds:  5,
-		PollChatsSeconds:     15,
-		PollPresenceSeconds:  60,
-		DownloadDir:          filepath.Join(home, "Downloads"),
-		TimeFormat:           "15:04",
-		DateFormat:           "Mon 02 Jan",
-		SidebarWidth:         34,
-		Theme:                "dark",
-		CombinedChat:         true,
-		PollChannelSeconds:   4,
+		ClientID:               DefaultClientID,
+		Tenant:                 "organizations",
+		DesktopNotifications:   true,
+		Bell:                   false,
+		PollMessagesSeconds:    5,
+		PollChatsSeconds:       15,
+		PollPresenceSeconds:    60,
+		DownloadDir:            filepath.Join(home, "Downloads"),
+		TimeFormat:             "15:04",
+		DateFormat:             "Mon 02 Jan",
+		SidebarWidth:           33,
+		Theme:                  "light",
+		Icons:                  "nerd",
+		MeetingReminderMinutes: 5,
+		CombinedChat:           true,
+		PollChannelSeconds:     4,
 	}
 }
 
@@ -130,6 +138,15 @@ func Load() (Config, error) {
 	} else if cfg.PollChannelSeconds > 0 && cfg.PollChannelSeconds < 2 {
 		cfg.PollChannelSeconds = 2
 	}
+	if cfg.ASCIIIcons && cfg.Icons == "" {
+		cfg.Icons = "ascii"
+	}
+	if cfg.Icons != "ascii" {
+		cfg.Icons = "nerd"
+	}
+	if cfg.MeetingReminderMinutes <= 0 {
+		cfg.MeetingReminderMinutes = 5
+	}
 	if cfg.SidebarWidth < 24 {
 		cfg.SidebarWidth = 24
 	}
@@ -140,4 +157,18 @@ func Load() (Config, error) {
 		cfg.DateFormat = "Mon 02 Jan"
 	}
 	return cfg, nil
+}
+
+// Save writes cfg to config.json.
+func Save(cfg Config) error {
+	p, err := Path()
+	if err != nil {
+		return err
+	}
+	cfg.ASCIIIcons = false
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o600)
 }

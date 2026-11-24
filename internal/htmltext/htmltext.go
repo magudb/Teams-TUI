@@ -276,6 +276,10 @@ func (r *renderer) walk(n *xhtml.Node) {
 				r.st.mentionMe = true
 				r.res.MentionsMe = true
 			}
+			if t := strings.TrimSpace(textOf(n)); t != "" && !strings.HasPrefix(t, "@") {
+				r.text("@")
+				r.lastWS = false
+			}
 		case "emoji":
 			alt := attr(n, "alt")
 			if alt == "" {
@@ -340,7 +344,13 @@ func Render(body string, isHTML bool, opt Options) Result {
 		for _, src := range strings.Split(content, "\n") {
 			var wrapped string
 			if b.pre {
-				wrapped = ansi.Hardwrap(src, w, true)
+				// wrap the plain text, then style each piece so the
+				// continuation lines keep the code colour
+				var parts []string
+				for _, p := range strings.Split(ansi.Hardwrap(ansi.Strip(src), w, true), "\n") {
+					parts = append(parts, opt.Styles.Code.Render(p))
+				}
+				wrapped = strings.Join(parts, "\n")
 			} else {
 				wrapped = ansi.Wrap(src, w, "-/")
 			}
@@ -383,7 +393,7 @@ func Plain(body string) string {
 		case n.Type == xhtml.ElementNode && (n.DataAtom == atom.Br || n.DataAtom == atom.P || n.DataAtom == atom.Div || n.DataAtom == atom.Li):
 			sb.WriteString(" ")
 		case n.Type == xhtml.ElementNode && n.Data == "attachment":
-			sb.WriteString(" [attachment] ")
+			sb.WriteString(" Attachment ")
 			return
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -394,4 +404,19 @@ func Plain(body string) string {
 		walk(n)
 	}
 	return strings.TrimSpace(wsRun.ReplaceAllString(strings.ReplaceAll(sb.String(), " ", " "), " "))
+}
+
+func textOf(n *xhtml.Node) string {
+	var b strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n.Type == xhtml.TextNode {
+			b.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return b.String()
 }

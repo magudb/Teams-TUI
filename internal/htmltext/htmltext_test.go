@@ -48,7 +48,7 @@ func TestMentionsMe(t *testing.T) {
 }
 
 func TestPlain(t *testing.T) {
-	if got := Plain(`<p>a&nbsp;b</p><p>c<br>d</p><attachment id="x"></attachment>`); got != "a b c d [attachment]" {
+	if got := Plain(`<p>a&nbsp;b</p><p>c<br>d</p><attachment id="x"></attachment>`); got != "a b c d Attachment" {
 		t.Fatalf("got %q", got)
 	}
 }

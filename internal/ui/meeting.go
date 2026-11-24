@@ -8,7 +8,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
-	zone "github.com/lrstanley/bubblezone"
 	"github.com/magudb/Teams-TUI/internal/model"
 )
 
@@ -187,6 +186,15 @@ func (m *Model) openMeetingChat(e *model.Event) tea.Cmd {
 		return nil
 	}
 	m.chatTitles[e.ChatID] = e.Subject
+	// a meeting that is live (or about to start) opens in the meeting view
+	if e.Live(time.Now()) || (e.Start.After(time.Now()) && time.Until(e.Start) <= 10*time.Minute) {
+		m.liveMeeting = e.ID
+		m.section = SecCalendar
+		cmd := tea.Batch(m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: e.ChatID}), m.resolveAttendees(e))
+		m.section = SecCalendar
+		m.setFocus(FocusCompose)
+		return cmd
+	}
 	m.section = SecChat
 	cmd := m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: e.ChatID})
 	m.setFocus(FocusCompose)
@@ -281,183 +289,6 @@ func (m *Model) openTranscript(title, vtt string) {
 		text = []string{m.s.Muted.Render("The transcript is empty.")}
 	}
 	m.modal = &modal{kind: mText, title: title, text: text, width: min(100, m.w-8), raw: plain.String(), saveName: safeFileName(title) + ".txt"}
-}
-
-// ---- rendering --------------------------------------------------------------------
-
-func responseIcon(s styles, r string) string {
-	switch r {
-	case "accepted":
-		return s.OK.Render("✓")
-	case "tentativelyAccepted":
-		return s.Warn.Render("~")
-	case "declined":
-		return s.Danger.Render("✗")
-	case "organizer":
-		return s.Accent.Render("★")
-	}
-	return s.Faint.Render("?")
-}
-
-func (m *Model) eventDetailLines(e *model.Event, w int) []string {
-	s := m.s
-	now := time.Now()
-	var lines []string
-	title := " " + s.Title.Render(trunc(e.Subject, w-20))
-	switch {
-	case e.IsCancelled:
-		title += "  " + s.Danger.Render("Cancelled")
-	case e.Live(now) && e.IsOnline:
-		title += "  " + s.Badge.Render(" ● LIVE ")
-	case e.Start.After(now) && e.Start.Sub(now) <= 15*time.Minute:
-		title += "  " + s.Warn.Render("starts "+untilLabel(e))
-	}
-	lines = append(lines, "", title)
-	when := e.Start.Format("Monday 2 January · ") + e.Start.Format(m.cfg.TimeFormat) + "–" + e.End.Format(m.cfg.TimeFormat)
-	if e.IsAllDay {
-		when = e.Start.Format("Monday 2 January") + " · all day"
-	}
-	lines = append(lines, " "+s.Muted.Render(when))
-	if e.Location != "" {
-		lines = append(lines, " "+s.Muted.Render("📍 "+e.Location))
-	}
-	if e.Organizer != "" {
-		lines = append(lines, " "+s.Muted.Render("Organizer: "+e.Organizer))
-	}
-	resp := map[string]string{"accepted": "✓ You accepted", "tentativelyAccepted": "~ You said maybe", "declined": "✗ You declined", "organizer": "★ You're the organizer", "notResponded": "? You haven't responded", "none": "? You haven't responded"}[e.Response]
-	if resp != "" {
-		lines = append(lines, " "+s.Accent.Render(resp))
-	}
-	lines = append(lines, "")
-
-	btn := func(id, label string, hot bool) string {
-		st := s.Button
-		if hot {
-			st = s.ButtonHot
-		}
-		return zone.Mark("ev:"+id, st.Render(label))
-	}
-	var bs []string
-	if e.JoinURL != "" && !e.IsCancelled {
-		hot := e.Live(now) || (e.Start.After(now) && e.Start.Sub(now) <= 15*time.Minute)
-		bs = append(bs, btn("join", " 📹 Join ", hot))
-	}
-	if e.ChatID != "" {
-		bs = append(bs, btn("chat", "[💬 Chat]", false))
-	}
-	if e.Response != "organizer" && !e.IsCancelled && now.Before(e.End) {
-		bs = append(bs, btn("accept", "[✓ Accept]", false), btn("tentative", "[~ Maybe]", false), btn("decline", "[✗ Decline]", false))
-	}
-	if e.WebLink != "" {
-		bs = append(bs, btn("web", "[↗ Outlook]", false))
-	}
-	lines = append(lines, wrapButtons(bs, w-2)...)
-
-	// post-meeting recap
-	if e.JoinURL != "" && now.After(e.End) {
-		lines = append(lines, "", " "+s.Bold.Render("Recap"))
-		st := m.artifacts[e.ID]
-		switch {
-		case st == nil || st.loading:
-			lines = append(lines, "  "+s.Faint.Render(m.spinner.View()+" Looking for transcript and recording…"))
-		case st.err != "" && len(st.a.Transcripts) == 0 && len(st.a.Recordings) == 0:
-			for _, l := range strings.Split(ansi.Wrap(st.err, w-4, " "), "\n") {
-				lines = append(lines, "  "+s.Faint.Render(l))
-			}
-		default:
-			var rb []string
-			if n := len(st.a.Transcripts); n > 0 {
-				rb = append(rb, btn("transcript", "[📝 Transcript]", false))
-			}
-			if n := len(st.a.Recordings); n > 0 {
-				rb = append(rb, btn("recording", "[⏺ Download recording]", false))
-			}
-			if len(rb) == 0 {
-				lines = append(lines, "  "+s.Faint.Render("No transcript or recording was made."))
-			} else {
-				lines = append(lines, wrapButtons(rb, w-2)...)
-			}
-		}
-	}
-
-	if len(e.Attendees) > 0 {
-		counts := map[string]int{}
-		for _, a := range e.Attendees {
-			counts[a.Response]++
-		}
-		summary := itoa(counts["accepted"]) + " accepted"
-		if n := counts["tentativelyAccepted"]; n > 0 {
-			summary += " · " + itoa(n) + " maybe"
-		}
-		if n := counts["declined"]; n > 0 {
-			summary += " · " + itoa(n) + " declined"
-		}
-		if n := counts["none"] + counts["notResponded"]; n > 0 {
-			summary += " · " + itoa(n) + " no response"
-		}
-		lines = append(lines, "", " "+s.Bold.Render("Attendees ("+itoa(len(e.Attendees))+")")+"  "+s.Faint.Render(summary))
-		for i, a := range e.Attendees {
-			if i >= 20 {
-				lines = append(lines, "   "+s.Faint.Render("+"+itoa(len(e.Attendees)-20)+" more"))
-				break
-			}
-			dot := s.Faint.Render("◌")
-			status := ""
-			if u, ok := m.emailUsers[strings.ToLower(a.Email)]; ok {
-				p, known := m.presence[u.ID]
-				dot = s.presenceDot(p, known)
-				if known {
-					status = presenceLabel(p)
-				}
-			}
-			name := a.Name
-			if a.Type == "optional" {
-				name += s.Faint.Render(" (optional)")
-			}
-			l := "  " + dot + " " + responseIcon(s, a.Response) + " " + name
-			lines = append(lines, zone.Mark("evatt:"+itoa(i), spread(l, s.Faint.Render(status)+" ", w)))
-		}
-	}
-	if e.Preview != "" {
-		lines = append(lines, "")
-		for _, l := range strings.Split(ansi.Wrap(e.Preview, w-4, " "), "\n") {
-			lines = append(lines, "  "+s.Muted.Render(l))
-		}
-	}
-	lines = append(lines, "", s.Faint.Render(" j join · c chat · a/T/D respond · x transcript · R recording · o Outlook"))
-	return lines
-}
-
-func wrapButtons(bs []string, w int) []string {
-	var lines []string
-	cur := ""
-	for _, b := range bs {
-		if cur != "" && ansi.StringWidth(cur)+1+ansi.StringWidth(b) > w {
-			lines = append(lines, " "+cur)
-			cur = ""
-		}
-		if cur != "" {
-			cur += " "
-		}
-		cur += b
-	}
-	if cur != "" {
-		lines = append(lines, " "+cur)
-	}
-	return lines
-}
-
-// meetingBanner is shown in the status bar when a meeting is live or about to start.
-func (m *Model) meetingBanner() string {
-	e := m.upcomingMeeting()
-	if e == nil {
-		return ""
-	}
-	st := m.s.Warn
-	if e.Live(time.Now()) {
-		st = m.s.OK
-	}
-	return st.Render("📅 "+trunc(e.Subject, 28)+" · "+untilLabel(e)) + " " + zone.Mark("status:join", m.s.ButtonHot.Render(" Join "))
 }
 
 func (m *Model) saveTranscript(md *modal) {

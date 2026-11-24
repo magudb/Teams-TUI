@@ -260,7 +260,7 @@ func (r *renderer) label(el map[string]any, w int) []string {
 		if boolv(el, "isRequired", false) {
 			suffix = r.s.Attention.Render(" *")
 		}
-		return []string{r.s.Bold.Render(ansi.Truncate(l, w-2, "…")) + suffix}
+		return []string{r.s.Subtle.Render(ansi.Truncate(l, w-2, "…")) + suffix}
 	}
 	return nil
 }
@@ -275,9 +275,8 @@ func (r *renderer) input(el map[string]any, w int) []string {
 	if v == "" {
 		v = strings.TrimPrefix(str(el, "type"), "Input.")
 	}
-	bw := min(w, 40)
-	box := r.s.Border.Render("[") + st.Render(fit(" "+v, bw-2)) + r.s.Border.Render("]")
-	return append(r.label(el, w), box)
+	_ = st
+	return append(r.label(el, w), r.s.InputBox.Render(fit(" "+v+" · read-only in the terminal", w)))
 }
 
 func (r *renderer) choices(el map[string]any, w int) []string {
@@ -311,8 +310,7 @@ func (r *renderer) choices(el map[string]any, w int) []string {
 	if cur == "" && len(chs) > 0 {
 		cur = str(chs[0], "title")
 	}
-	bw := min(w, 40)
-	return append(out, r.s.Border.Render("[")+r.s.Input.Render(fit(" "+cur, bw-4))+r.s.Border.Render(" ▾]"))
+	return append(out, r.s.InputBox.Render(fit(" "+cur+" ▾", w)))
 }
 
 // facts renders a FactSet as aligned title/value pairs.
@@ -330,7 +328,7 @@ func (r *renderer) facts(el map[string]any, w int) []string {
 		for i, v := range vals {
 			t := ""
 			if i == 0 {
-				t = r.s.Bold.Render(ansi.Truncate(str(f, "title"), tw, "…"))
+				t = r.s.Subtle.Render(ansi.Truncate(str(f, "title"), tw, "…"))
 			}
 			out = append(out, fit(t, tw)+"  "+v)
 		}
@@ -496,7 +494,7 @@ func (r *renderer) table(el map[string]any, w int, path string) []string {
 				lines := r.items(arr(cells[ci], "items"), widths[ci], path+".r"+strconv.Itoa(ri)+"c"+strconv.Itoa(ci))
 				if header && ri == 0 {
 					for k := range lines {
-						lines[k] = r.s.Bold.Render(ansi.Strip(lines[k]))
+						lines[k] = ansi.Strip(lines[k])
 					}
 				}
 				rendered[ci] = lines
@@ -512,12 +510,20 @@ func (r *renderer) table(el map[string]any, w int, path string) []string {
 				}
 				b.WriteString(fit(cell, widths[ci]))
 				if ci < n-1 && sep > 0 {
-					b.WriteString(" " + vbar + " ")
+					if r.opt.Frame {
+						b.WriteString("   ")
+					} else {
+						b.WriteString(" " + vbar + " ")
+					}
 				}
+			}
+			if header && ri == 0 && r.opt.Frame {
+				out = append(out, r.s.TableHeader.Render(fit(b.String(), w)))
+				continue
 			}
 			out = append(out, strings.TrimRight(b.String(), " "))
 		}
-		if grid && (ri == 0 && header || ri < len(rows)-1 && grid && !header) {
+		if grid && !r.opt.Frame && (ri == 0 && header || ri < len(rows)-1 && grid && !header) {
 			var b strings.Builder
 			for ci := 0; ci < n; ci++ {
 				b.WriteString(strings.Repeat("─", widths[ci]))
@@ -550,15 +556,19 @@ func (r *renderer) actions(acts []map[string]any, w int, path string) []string {
 			st = r.s.ButtonDanger
 		}
 		label := title
+		ext := r.s.External
+		if ext == "" {
+			ext = "↗"
+		}
 		switch str(a, "type") {
 		case "Action.OpenUrl":
 			act.Type, act.URL = OpenURL, str(a, "url")
-			label = "↗ " + title
+			label = title + " " + ext
 			r.res.Links = append(r.res.Links, act.URL)
 		case "Action.ShowCard":
 			act.Type = ShowCard
 			if r.opt.State.Expanded[key] {
-				label = "▾ " + title
+				label = title + " ▴"
 				if c := obj(a, "card"); c != nil {
 					sub := r.adaptive(c, w-2, key+">")
 					for _, l := range sub {
@@ -566,11 +576,11 @@ func (r *renderer) actions(acts []map[string]any, w int, path string) []string {
 					}
 				}
 			} else {
-				label = "▸ " + title
+				label = title + " ▾"
 			}
 		case "Action.ToggleVisibility":
 			act.Type = Toggle
-			label = "⇅ " + title
+			label = title + " ⇅"
 			targets, _ := a["targetElements"].([]any)
 			for _, t := range targets {
 				switch v := t.(type) {
@@ -587,22 +597,34 @@ func (r *renderer) actions(acts []map[string]any, w int, path string) []string {
 		default: // Action.Submit, Action.Execute
 			act.Type = BotAction
 			st = r.s.ButtonDead
+			lock := r.s.Lock
+			if lock == "" {
+				lock = "🔒"
+			}
+			label = lock + " " + title
+			if title != "" {
+				r.botTitles = append(r.botTitles, title)
+			}
 		}
 		if title == "" && act.Type == OpenURL {
-			label = "↗ Open"
+			label = "Open " + ext
 		}
 		r.res.Actions = append(r.res.Actions, act)
-		buttons = append(buttons, r.opt.Mark(key, st.Render("[ "+label+" ]")))
+		if r.opt.Frame {
+			buttons = append(buttons, r.opt.Mark(key, st.Render(label)))
+		} else {
+			buttons = append(buttons, r.opt.Mark(key, st.Render("[ "+label+" ]")))
+		}
 	}
 	var out []string
 	cur := ""
 	for _, b := range buttons {
-		if cur != "" && ansi.StringWidth(cur)+1+ansi.StringWidth(b) > w {
+		if cur != "" && ansi.StringWidth(cur)+2+ansi.StringWidth(b) > w {
 			out = append(out, cur)
 			cur = ""
 		}
 		if cur != "" {
-			cur += " "
+			cur += "  "
 		}
 		cur += b
 	}

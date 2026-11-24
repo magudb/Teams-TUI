@@ -13,14 +13,15 @@ import (
 	"github.com/magudb/Teams-TUI/internal/model"
 )
 
-// Conversation rendering, modelled on the Teams desktop client:
-//   - chats: avatar + name above tinted bubbles; your own messages on the right
-//   - channels: every post is a card holding its thread (latest replies + Reply)
-//   - threads: the original post as a card on top, replies below it
+// Conversation rendering in the "Blocks" style:
+//   - chats: name + time, then the text on a filled block; your own messages
+//     right-aligned in an inverse block; chips for days and "New messages"
+//   - channels: every post is a filled block whose footer bar carries its
+//     thread (reply count, who replied, open)
+//   - threads: the original post condensed on top, a reply-count chip, then
+//     the replies
 
 var quickReactions = []string{"👍", "❤️", "😆", "😮", "😢", "😡"}
-
-const gutterW = 2 // selection marker column + space
 
 // bgPrefix returns the escape sequence that switches on background c (empty
 // when the terminal has no colour support).
@@ -42,26 +43,6 @@ func withBg(line, prefix string, w int) string {
 	return prefix + strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+prefix) + "\x1b[0m"
 }
 
-func (s styles) avatar(id, name string) string {
-	c := s.t.Names[0]
-	if st := s.nameColor(id); st.GetForeground() != nil {
-		c = st.GetForeground()
-	}
-	return lipgloss.NewStyle().Background(c).Foreground(lipgloss.Color("#1F1F1F")).Bold(true).Render(padRight(" "+initials(name), 4))
-}
-
-// avatarFor returns the initials chip of the message author.
-func (m *Model) avatarFor(msg *model.Message) string {
-	name := msg.From.DisplayName
-	if msg.From.ID == m.me.ID && m.me.DisplayName != "" {
-		name = m.me.DisplayName
-	}
-	if name == "" {
-		name = m.userName(msg.From.ID)
-	}
-	return m.s.avatar(msg.From.ID, name)
-}
-
 func (m *Model) displayName(msg *model.Message) string {
 	if msg.From.ID == m.me.ID && m.me.ID != "" {
 		return "You"
@@ -72,19 +53,31 @@ func (m *Model) displayName(msg *model.Message) string {
 	return m.userName(msg.From.ID)
 }
 
+// paneFills returns the fills used inside a pane: its own background, the
+// fill for message blocks on it, and the fill for chips.
+func (m *Model) paneFills(side bool) (pane, block, chip lipgloss.Color) {
+	t := m.s.t
+	if side {
+		return t.Side, t.Paper, t.Block
+	}
+	return t.Paper, t.Side, t.Block
+}
+
 // renderConv lays out all messages of cv for the given width.
-func (m *Model) renderConv(cv *convView, width int) {
-	if !cv.dirty && cv.width == width {
+func (m *Model) renderConv(cv *convView, width int, side bool) {
+	if !cv.dirty && cv.width == width && cv.side == side {
 		return
 	}
 	cv.dirty = false
 	cv.width = width
+	cv.side = side
 	cv.lines = cv.lines[:0]
 	cv.owner = cv.owner[:0]
 	cv.msgStart = make([]int, len(cv.msgs))
 	cv.links = map[string][]string{}
 	cv.cardActs = map[string]cardRef{}
 	s := m.s
+	_, blockC, chipC := m.paneFills(side)
 
 	add := func(line string, owner int) {
 		if line == "" && owner == -1 && (len(cv.lines) == 0 || cv.lines[len(cv.lines)-1] == "") {
@@ -93,17 +86,17 @@ func (m *Model) renderConv(cv *convView, width int) {
 		cv.lines = append(cv.lines, line)
 		cv.owner = append(cv.owner, owner)
 	}
-	center := func(label string, st lipgloss.Style) string {
-		label = " " + label + " "
-		side := max(0, (width-ansi.StringWidth(label))/2)
-		return st.Render(strings.Repeat("─", side) + label + strings.Repeat("─", max(0, width-side-ansi.StringWidth(label))))
+	chip := func(label string, st lipgloss.Style) string {
+		return centerIn(st.Render("  "+label+"  "), width)
+	}
+	dayChip := lipgloss.NewStyle().Background(blockC).Foreground(s.t.Muted)
+	if side {
+		dayChip = lipgloss.NewStyle().Background(chipC).Foreground(s.t.Text)
 	}
 
+	add("", -1)
 	if cv.next != "" {
-		add(zone.Mark("older", s.Button.Render("  ↑ Load older messages")), -2)
-		add("", -1)
-	} else if cv.loadedOnce && len(cv.msgs) > 0 && cv.ref.ThreadID == "" {
-		add(s.Faint.Render("  Beginning of conversation"), -1)
+		add(zone.Mark("older", "  "+s.Button.Render("↑ Load older messages")), -2)
 		add("", -1)
 	}
 
@@ -120,24 +113,28 @@ func (m *Model) renderConv(cv *convView, width int) {
 	for i := range cv.msgs {
 		msg := &cv.msgs[i]
 		isRoot := kind == "thread" && msg.ID == cv.ref.ThreadID
+		divided := false
 
-		if !isRoot && (prev == nil || !sameDay(prev.Created, msg.Created)) && kind != "thread" {
-			add(center(dayLabel(msg.Created), s.Faint), -1)
+		if kind != "thread" && (prev == nil || !sameDay(prev.Created, msg.Created)) {
 			add("", -1)
+			add(chip(dayLabel(msg.Created), dayChip), -1)
+			add("", -1)
+			divided = true
 		}
 		if kind == "chat" && !newShown && !cv.newSince.IsZero() && msg.From.ID != m.me.ID && msg.Created.After(cv.newSince) {
 			newShown = true
-			add(center("New messages", s.Danger), -1)
 			add("", -1)
+			add(chip("New messages", s.Badge), -1)
+			add("", -1)
+			divided = true
 		}
 		grouped := kind != "channel" && !isRoot && prev != nil && prev.From.ID == msg.From.ID &&
 			msg.Created.Sub(prev.Created) < 5*time.Minute && sameDay(prev.Created, msg.Created) &&
 			msg.MessageType == "message" && prev.MessageType == "message" && msg.Subject == "" &&
-			!(kind == "thread" && prev.ID == cv.ref.ThreadID)
+			!(kind == "thread" && prev.ID == cv.ref.ThreadID) && !divided
 		if i > 0 && !grouped {
 			add("", -1)
 		}
-		// keep the divider lines tight: no blank between a divider and its message
 
 		cv.msgStart[i] = len(cv.lines)
 		var lines []string
@@ -145,11 +142,11 @@ func (m *Model) renderConv(cv *convView, width int) {
 		case msg.MessageType != "" && msg.MessageType != "message":
 			lines = m.systemLines(msg, width)
 		case kind == "channel":
-			lines = m.postCard(cv, i, width, false)
+			lines = m.postBlock(cv, i, width, side)
 		case isRoot:
-			lines = m.postCard(cv, i, width, true)
+			lines = m.threadRoot(cv, i, width)
 		default:
-			lines = m.bubbleMessage(cv, i, width, grouped, kind == "chat")
+			lines = m.chatMessage(cv, i, width, grouped, kind == "chat", side)
 		}
 		for _, l := range lines {
 			add(l, i)
@@ -157,35 +154,29 @@ func (m *Model) renderConv(cv *convView, width int) {
 		if isRoot {
 			n := len(cv.msgs) - 1
 			label := itoa(n) + " replies"
-			if n == 1 {
+			switch n {
+			case 1:
 				label = "1 reply"
-			} else if n == 0 {
-				label = "No replies yet — be the first"
+			case 0:
+				label = "No replies yet"
 			}
 			add("", -1)
-			add(center(label, s.Muted), -1)
+			add(chip(label, lipgloss.NewStyle().Background(chipC).Foreground(s.t.Text)), -1)
 		}
 		prev = msg
 	}
 	switch {
 	case cv.loading && len(cv.msgs) == 0:
-		add(s.Muted.Render("  Loading messages…"), -1)
+		add("  "+s.Muted.Render("Loading messages…"), -1)
 	case cv.err != "" && len(cv.msgs) == 0:
-		add(s.Danger.Render("  "+cv.err), -1)
+		add("  "+s.Danger.Render(cv.err), -1)
 	case cv.loadedOnce && len(cv.msgs) == 0:
 		if kind == "channel" {
-			add(s.Muted.Render("  No posts yet. Start a post below."), -1)
+			add("  "+s.Muted.Render("No posts yet. Start a post below."), -1)
 		} else {
-			add(s.Muted.Render("  No messages yet. Say hello 👋"), -1)
+			add("  "+s.Muted.Render("No messages yet. Say hello."), -1)
 		}
 	}
-}
-
-func (m *Model) gutter(cv *convView, i int) string {
-	if i == cv.sel {
-		return m.s.Accent.Render("▌") + " "
-	}
-	return "  "
 }
 
 func (m *Model) systemLines(msg *model.Message, width int) []string {
@@ -193,26 +184,24 @@ func (m *Model) systemLines(msg *model.Message, width int) []string {
 	if txt == "" {
 		txt = "System event"
 	}
-	l := m.s.Faint.Render(trunc(txt+" · "+msg.Created.Format(m.cfg.TimeFormat), width-4))
-	return []string{centerIn(l, width)}
+	return []string{centerIn(m.s.Muted.Render(trunc(txt+" · "+msg.Created.Format(m.cfg.TimeFormat), width-4)), width)}
 }
 
-// headerText is "Name  12:34 · edited  ! IMPORTANT  sending…".
+// headerText is "Name 12:34 · edited  MENTION  sending…".
 func (m *Model) headerText(cv *convView, msg *model.Message, withName bool) string {
 	s := m.s
 	var parts []string
 	if withName {
-		st := s.nameColor(msg.From.ID)
-		if msg.From.ID == m.me.ID {
-			st = s.Accent.Bold(true)
-		}
-		parts = append(parts, st.Render(m.displayName(msg)))
+		parts = append(parts, s.nameColor(msg.From.ID).Render(m.displayName(msg))+" "+s.Muted.Render(msg.Created.Format(m.cfg.TimeFormat)))
+	} else {
+		parts = append(parts, s.Muted.Render(msg.Created.Format(m.cfg.TimeFormat)))
 	}
-	t := s.Faint.Render(msg.Created.Format(m.cfg.TimeFormat))
 	if msg.Edited && !msg.Deleted {
-		t += s.Faint.Render(" · edited")
+		parts[0] += s.Muted.Render(" · edited")
 	}
-	parts = append(parts, t)
+	if msg.ID == m.jumpMention && m.jumpMention != "" {
+		parts = append(parts, s.Badge.Render(" MENTION "))
+	}
 	switch msg.Importance {
 	case "high":
 		parts = append(parts, s.Danger.Bold(true).Render("! IMPORTANT"))
@@ -223,24 +212,23 @@ func (m *Model) headerText(cv *convView, msg *model.Message, withName bool) stri
 		if cv.failed[msg.ID] {
 			parts = append(parts, s.Danger.Render("⚠ not sent — d to discard"))
 		} else {
-			parts = append(parts, s.Faint.Render("sending…"))
+			parts = append(parts, s.Muted.Render("sending…"))
 		}
 	}
-	return strings.Join(parts, "  ")
+	return strings.Join(parts, " ")
 }
 
-// messageContent renders body, attachments and records links for msg.
 func (m *Model) messageContent(cv *convView, msg *model.Message, w int) []string {
 	lines, _ := m.messageParts(cv, msg, w, w)
 	return lines
 }
 
 // messageParts renders the text part of a message (body, file attachments)
-// and, separately, its cards (cardW wide). Cards are drawn outside bubbles.
+// and, separately, its cards (cardW wide). Cards are drawn outside blocks.
 func (m *Model) messageParts(cv *convView, msg *model.Message, w, cardW int) (text, cardLines []string) {
 	s := m.s
 	if msg.Deleted {
-		return []string{s.Faint.Italic(true).Render("This message has been deleted.")}, nil
+		return []string{s.Muted.Italic(true).Render("This message has been deleted.")}, nil
 	}
 	isMe := func(atID string) bool {
 		n, err := strconv.Atoi(atID)
@@ -256,15 +244,20 @@ func (m *Model) messageParts(cv *convView, msg *model.Message, w, cardW int) (te
 	}
 	res := htmltext.Render(msg.Body, msg.ContentType != "text", htmltext.Options{Width: w, IsMe: isMe, Styles: s.html})
 	out := res.Lines
+	if msg.ID == m.searchTarget && m.searchQ != "" {
+		for i, l := range out {
+			out[i] = highlight(ansi.Strip(l), m.searchQ, s.Text, s.Inverse.Bold(true))
+		}
+	}
 	links := append([]string{}, res.Links...)
 	for ai, a := range msg.Attachments {
 		id := "att:" + msg.ID + ":" + itoa(ai)
 		switch {
 		case a.ContentType == "reference":
-			out = append(out, zone.Mark(id, s.html.Link.Render(trunc("📎 "+a.Name, w))))
+			out = append(out, zone.Mark(id, s.Accent.Render(s.ic.Clip)+" "+s.html.Link.Render(trunc(a.Name, w-12))+attachmentSize(s, a)))
 			links = append(links, a.ContentURL)
 		case a.ContentType == "messageReference":
-			out = append(out, s.Muted.Render(trunc("↪ "+quotedPreview(a.Content), w)))
+			out = append(out, s.Muted.Render(trunc(s.ic.Reply+" "+quotedPreview(a.Content), w)))
 		case cards.Supported(a.ContentType):
 			lines, cardLinks, ok := m.renderCard(cv, msg, ai, a, cardW)
 			if !ok {
@@ -278,7 +271,7 @@ func (m *Model) messageParts(cv *convView, msg *model.Message, w, cardW int) (te
 			if name == "" {
 				name = a.ContentType
 			}
-			out = append(out, zone.Mark(id, s.html.Link.Render(trunc("📎 "+name, w))))
+			out = append(out, zone.Mark(id, s.Accent.Render(s.ic.Clip)+" "+s.html.Link.Render(trunc(name, w-4))))
 			links = append(links, a.ContentURL)
 		}
 	}
@@ -287,6 +280,15 @@ func (m *Model) messageParts(cv *convView, msg *model.Message, w, cardW int) (te
 	}
 	cv.links[msg.ID] = append(links, res.Images...)
 	return out, cardLines
+}
+
+func attachmentSize(s styles, a model.Attachment) string {
+	if i := strings.Index(a.ContentURL, "size="); i >= 0 {
+		if n, err := strconv.ParseInt(a.ContentURL[i+5:], 10, 64); err == nil {
+			return " " + s.Muted.Render(humanSize(n))
+		}
+	}
+	return ""
 }
 
 type cardRef struct {
@@ -304,8 +306,9 @@ func (m *Model) renderCard(cv *convView, msg *model.Message, ai int, a model.Att
 		cv.cardState[stateKey] = st
 	}
 	prefix := "card:" + msg.ID + ":" + itoa(ai) + ":"
+	label := msg.From.DisplayName
 	res, ok := cards.Render(a.ContentType, a.Content, cards.Options{
-		Width: w, Styles: m.s.cards, State: st, Frame: true,
+		Width: w, Styles: m.s.cards, State: st, Frame: true, Label: label,
 		Mark: func(key, label string) string { return zone.Mark(prefix+key, label) },
 		IsMe: func(name string) bool { return name == m.me.DisplayName },
 	})
@@ -315,11 +318,34 @@ func (m *Model) renderCard(cv *convView, msg *model.Message, ai int, a model.Att
 	for _, act := range res.Actions {
 		cv.cardActs[prefix+act.Key] = cardRef{msgID: msg.ID, att: ai, action: act}
 	}
-	return res.Lines, res.Links, true
+	// card body on the card fill, title bar keeps its own
+	lines := make([]string, len(res.Lines))
+	for i, l := range res.Lines {
+		if i == 0 {
+			lines[i] = l
+			continue
+		}
+		lines[i] = withBg(l, m.s.bgCard, w)
+	}
+	return lines, res.Links, true
+}
+
+// reactionIcon maps common reactions to the icon set (others stay emoji).
+func (m *Model) reactionIcon(e string) string {
+	if m.cfg.Icons == "ascii" {
+		return e
+	}
+	switch e {
+	case "👍":
+		return m.s.ic.ThumbsUp
+	case "✅", "✔️", "✔":
+		return m.s.ic.Check
+	}
+	return e
 }
 
 // reactionChips renders reaction chips (clickable to toggle) within w cells.
-func (m *Model) reactionChips(msg *model.Message, w int) string {
+func (m *Model) reactionChips(msg *model.Message, w int, chipC lipgloss.Color) string {
 	if len(msg.Reactions) == 0 || msg.Deleted {
 		return ""
 	}
@@ -346,11 +372,11 @@ func (m *Model) reactionChips(msg *model.Message, w int) string {
 	used := 0
 	for _, e := range order {
 		a := counts[e]
-		st := s.Chip
+		st := lipgloss.NewStyle().Background(chipC).Foreground(s.t.Text)
 		if a.mine {
 			st = s.ChipMine
 		}
-		chip := st.Render(" " + e + " " + itoa(a.n) + " ")
+		chip := st.Render(" " + m.reactionIcon(e) + " " + itoa(a.n) + " ")
 		cw := ansi.StringWidth(chip) + 1
 		if used+cw > w {
 			break
@@ -364,207 +390,202 @@ func (m *Model) reactionChips(msg *model.Message, w int) string {
 // actionBar is shown under the selected message.
 func (m *Model) actionBar(cv *convView, msg *model.Message, w int) string {
 	s := m.s
+	ic := s.ic
 	mine := msg.From.ID == m.me.ID
 	type act struct{ id, label string }
-	reply := "↩ Reply"
+	reply := ic.Reply + " Reply"
 	if cv.ref.Kind == model.KindChannel && cv.ref.ThreadID == "" {
-		reply = "↩ Reply in thread"
+		reply = ic.Reply + " Reply in thread"
 	}
-	acts := []act{{"reply", reply}, {"react", "☺ React"}}
-	if mine && !msg.Deleted {
-		acts = append(acts, act{"edit", "✎ Edit"}, act{"delete", "⌫ Delete"})
-	}
+	var acts []act
 	if m.hasCardActions(cv, msg) {
-		acts = append(acts, act{"card", "⚡ Card actions"})
+		acts = append(acts, act{"card", ic.Bolt + " Card actions"})
+	} else {
+		acts = append(acts, act{"reply", reply})
 	}
-	acts = append(acts, act{"copy", "⧉ Copy"})
-	if len(cv.links[msg.ID]) > 0 {
-		acts = append(acts, act{"open", "↗ Open"})
+	acts = append(acts, act{"react", "+ React"})
+	if mine && !msg.Deleted {
+		acts = append(acts, act{"edit", ic.Pencil + " Edit"}, act{"delete", "Delete"})
 	}
-	acts = append(acts, act{"more", "⋯"})
+	acts = append(acts, act{"copy", "Copy"})
+	if len(cv.links[msg.ID]) > 0 && !m.hasCardActions(cv, msg) {
+		acts = append(acts, act{"open", "Open " + ic.External})
+	}
+	acts = append(acts, act{"more", ic.More})
 	var parts []string
 	used := 0
 	for _, a := range acts {
-		b := s.Button.Render("[" + a.label + "]")
+		b := s.Button.Render(a.label)
 		if used+ansi.StringWidth(b)+1 > w {
 			break
 		}
 		used += ansi.StringWidth(b) + 1
 		parts = append(parts, zone.Mark("act:"+a.id, b))
 	}
-	for _, e := range quickReactions {
-		if used+3 > w {
-			break
-		}
-		used += 3
-		parts = append(parts, zone.Mark("quick:"+e, e))
-	}
 	return strings.Join(parts, " ")
 }
 
-// bubbleMessage renders a chat-style message. In chats (rightAlign) your own
-// messages are right-aligned like in Teams.
-func (m *Model) bubbleMessage(cv *convView, i, width int, grouped, rightAlign bool) []string {
+// chatMessage renders a chat-style message: header, filled text block,
+// cards, reactions and (when selected) the action row. In chats your own
+// messages are right-aligned on an inverse block.
+func (m *Model) chatMessage(cv *convView, i, width int, grouped, rightAlign, side bool) []string {
 	s := m.s
 	msg := &cv.msgs[i]
 	mine := msg.From.ID == m.me.ID && m.me.ID != ""
 	right := mine && rightAlign
-	g := m.gutter(cv, i)
-	avail := width - gutterW
-	indent := 5 // avatar (4) + space
-	if right {
-		indent = 0
-	}
-	maxBubble := max(20, min(avail-indent-2, max(40, avail*3/4)))
+	_, blockC, chipC := m.paneFills(side)
+	const indent = 2
+	avail := width - 2*indent
+	maxBlock := max(16, avail-max(2, width/8))
 
-	bg := bgPrefix(s.t.BubbleOther)
+	bg := bgPrefix(blockC)
+	textSt := lipgloss.NewStyle()
 	if mine {
-		bg = bgPrefix(s.t.BubbleMine)
+		bg = s.bgInk
+		textSt = lipgloss.NewStyle().Foreground(s.t.OnInk)
 	}
-	if msg.Importance == "urgent" || msg.Importance == "high" {
-		bg = bgPrefix(s.t.BubbleUrgent)
-	}
-	cardW := max(20, min(avail-indent, 84))
-	content, cardLines := m.messageParts(cv, msg, maxBubble-2, cardW)
+	cardW := max(20, min(avail, 72))
+	content, cardLines := m.messageParts(cv, msg, maxBlock-2, cardW)
 	if len(cardLines) > 0 && len(content) == 1 && strings.TrimSpace(ansi.Strip(content[0])) == "" {
-		content = nil // card-only message: no empty bubble
+		content = nil // card-only message: no empty block
 	}
 	bw := 0
 	for _, l := range content {
 		bw = max(bw, ansi.StringWidth(l))
 	}
-	bw = min(bw, maxBubble-2) + 2
+	bw = min(bw, maxBlock-2) + 2
 
 	place := func(l string, lw int) string {
 		if right {
-			return g + strings.Repeat(" ", max(0, avail-lw)) + l
+			return strings.Repeat(" ", max(0, width-indent-lw)) + l
 		}
-		return g + strings.Repeat(" ", indent) + l
+		return strings.Repeat(" ", indent) + l
 	}
 
 	var out []string
-	if !grouped {
-		if right {
-			h := m.headerText(cv, msg, false)
-			out = append(out, place(h, ansi.StringWidth(h)))
-		} else {
-			out = append(out, g+m.avatarFor(msg)+" "+trunc(m.headerText(cv, msg, true), avail-indent))
-		}
-	} else if strings.HasPrefix(msg.ID, "tmp:") || msg.Importance != "normal" && msg.Importance != "" {
-		h := m.headerText(cv, msg, false)
+	if !grouped || msg.Importance == "high" || msg.Importance == "urgent" || strings.HasPrefix(msg.ID, "tmp:") {
+		h := m.headerText(cv, msg, !right)
 		out = append(out, place(h, ansi.StringWidth(h)))
 	}
 	if msg.Subject != "" {
-		out = append(out, place(s.Title.Render(trunc(msg.Subject, maxBubble)), min(ansi.StringWidth(msg.Subject), maxBubble)))
+		sub := s.Title.Render(trunc(msg.Subject, maxBlock))
+		out = append(out, place(sub, ansi.StringWidth(sub)))
 	}
 	for _, l := range content {
+		if mine {
+			l = textSt.Render(ansi.Strip(l))
+		}
 		out = append(out, place(withBg(" "+l, bg, bw), bw))
 	}
 	for _, l := range cardLines {
 		out = append(out, place(l, ansi.StringWidth(l)))
 	}
-	if chips := m.reactionChips(msg, avail-indent); chips != "" {
+	if chips := m.reactionChips(msg, avail, chipC); chips != "" {
 		out = append(out, place(chips, ansi.StringWidth(chips)))
 	}
 	if i == cv.sel {
-		bar := m.actionBar(cv, msg, avail-indent)
+		bar := m.actionBar(cv, msg, avail)
 		out = append(out, place(bar, ansi.StringWidth(bar)))
 	}
 	return out
 }
 
-// postCard renders a channel post as a card containing its thread summary.
-// inThread renders the original post at the top of a thread (no footer).
-func (m *Model) postCard(cv *convView, i, width int, inThread bool) []string {
+// threadRoot is the condensed original post at the top of a thread.
+func (m *Model) threadRoot(cv *convView, i, width int) []string {
 	s := m.s
 	msg := &cv.msgs[i]
-	g := m.gutter(cv, i)
-	cw := min(width-gutterW, 120) // card width (capped for readability)
-	inner := cw - 4
-
-	border := s.Border
-	if i == cv.sel || (m.thread != nil && m.thread.ref.ThreadID == msg.ID && !inThread) || inThread {
-		border = s.Accent
+	w := width - 4
+	out := []string{"  " + m.headerText(cv, msg, true)}
+	if msg.Subject != "" {
+		out = append(out, "  "+s.Title.Render(trunc(msg.Subject, w)))
 	}
-	if msg.Importance == "urgent" || msg.Importance == "high" {
-		border = s.Danger
+	text, cardLines := m.messageParts(cv, msg, w, w)
+	if len(text) > 3 && i != cv.sel {
+		text = append(text[:2], s.Muted.Render(trunc(ansi.Strip(text[2]), w-1)+"…"))
+	}
+	for _, l := range text {
+		out = append(out, "  "+s.Muted.Render(ansi.Strip(l)))
+	}
+	for _, l := range cardLines {
+		out = append(out, "  "+l)
+	}
+	if i == cv.sel {
+		out = append(out, "  "+m.actionBar(cv, msg, w))
+	}
+	return out
+}
+
+// postBlock renders a channel post as a filled block whose footer bar holds
+// its thread: reply count and repliers (accent), or a Reply button.
+func (m *Model) postBlock(cv *convView, i, width int, side bool) []string {
+	s := m.s
+	ic := s.ic
+	msg := &cv.msgs[i]
+	const indent = 2
+	bw := min(width-2*indent, 110)
+	inner := bw - 2
+	_, blockC, chipC := m.paneFills(side)
+	fill := bgPrefix(blockC)
+	if i == cv.sel {
+		fill = s.bgBlock
+		chipC = s.t.Side
 	}
 
 	var body []string
-	body = append(body, m.avatarFor(msg)+" "+trunc(m.headerText(cv, msg, true), inner-5))
+	body = append(body, m.headerText(cv, msg, true))
 	if msg.Subject != "" {
 		body = append(body, s.Title.Render(trunc(msg.Subject, inner)))
 	}
-	text, cardLines := m.messageParts(cv, msg, inner, min(inner, 84))
+	text, cardLines := m.messageParts(cv, msg, inner, inner)
 	if len(cardLines) > 0 && len(text) == 1 && strings.TrimSpace(ansi.Strip(text[0])) == "" {
 		text = nil
 	}
 	body = append(body, text...)
-	body = append(body, cardLines...)
-	if chips := m.reactionChips(msg, inner); chips != "" {
-		body = append(body, "", chips)
+	if chips := m.reactionChips(msg, inner, chipC); chips != "" {
+		body = append(body, chips)
 	}
 	if i == cv.sel {
-		body = append(body, "", m.actionBar(cv, msg, inner))
+		body = append(body, m.actionBar(cv, msg, inner))
 	}
 
-	var footer []string
-	if !inThread && !msg.Deleted {
-		if msg.ReplyCount > 0 {
-			names := []string{}
-			seen := map[string]bool{}
-			for k := len(msg.Replies) - 1; k >= 0 && len(names) < 3; k-- {
-				n := m.displayName(&msg.Replies[k])
-				if n != "" && !seen[n] {
-					seen[n] = true
-					names = append(names, strings.Fields(n)[0])
-				}
-			}
-			label := "💬 " + itoa(msg.ReplyCount) + " replies"
-			if msg.ReplyCount == 1 {
-				label = "💬 1 reply"
-			}
-			if len(names) > 0 {
-				label += " from " + strings.Join(names, ", ")
-			}
-			footer = append(footer, zone.Mark("thread:"+msg.ID, s.Accent.Bold(true).Render(trunc(label, inner-14)))+"  "+zone.Mark("thread:"+msg.ID+":open", s.Button.Render("Open thread ›")))
-			// latest replies, one line each
-			start := max(0, len(msg.Replies)-2)
-			if start > 0 || msg.ReplyCount > len(msg.Replies) {
-				more := msg.ReplyCount - 2
-				if more == 1 {
-					footer = append(footer, s.Faint.Render("   ⋮ 1 earlier reply"))
-				} else if more > 1 {
-					footer = append(footer, s.Faint.Render("   ⋮ "+itoa(more)+" earlier replies"))
-				}
-			}
-			for _, r := range msg.Replies[start:] {
-				r := r
-				txt := plainOneLine(htmltext.Plain(r.Body))
-				if r.Deleted {
-					txt = "This message has been deleted."
-				}
-				who := strings.Fields(m.displayName(&r) + " ")[0]
-				left := "   " + m.avatarFor(&r) + " " + s.nameColor(r.From.ID).Render(who) + "  " + s.Muted.Render(trunc(txt, inner-20-ansi.StringWidth(who)))
-				footer = append(footer, spread(left, s.Faint.Render(relTime(r.Created, m.cfg.TimeFormat)), inner))
-			}
-			footer = append(footer, zone.Mark("thread:"+msg.ID+":reply", s.Button.Render("↩ Reply")))
-		} else {
-			footer = append(footer, zone.Mark("thread:"+msg.ID, s.Button.Render("↩ Reply")))
-		}
-	}
-
+	pad := strings.Repeat(" ", indent)
 	var out []string
-	out = append(out, g+border.Render("╭"+strings.Repeat("─", cw-2)+"╮"))
 	for _, l := range body {
-		out = append(out, g+border.Render("│")+" "+padRight(l, inner)+" "+border.Render("│"))
+		out = append(out, pad+withBg(" "+l, fill, bw))
 	}
-	if len(footer) > 0 {
-		out = append(out, g+border.Render("├"+strings.Repeat("─", cw-2)+"┤"))
-		for _, l := range footer {
-			out = append(out, g+border.Render("│")+" "+padRight(l, inner)+" "+border.Render("│"))
+	for _, l := range cardLines {
+		// cards sit inside the block, one column in
+		out = append(out, pad+withBg(" "+l, fill, bw))
+	}
+
+	if msg.Deleted {
+		return out
+	}
+	if msg.ReplyCount > 0 {
+		var names []string
+		seen := map[string]bool{}
+		for k := len(msg.Replies) - 1; k >= 0 && len(names) < 3; k-- {
+			n := m.displayName(&msg.Replies[k])
+			if n == "You" {
+				n = "you"
+			}
+			if n != "" && !seen[n] {
+				seen[n] = true
+				names = append(names, strings.Fields(n)[0])
+			}
 		}
+		label := ic.Reply + " " + itoa(msg.ReplyCount) + " replies"
+		if msg.ReplyCount == 1 {
+			label = ic.Reply + " 1 reply"
+		}
+		if len(names) > 0 {
+			label += " · " + strings.Join(names, ", ")
+		}
+		bar := s.Sel.Render(spread(" "+trunc(label, bw-10), "open › ", bw))
+		out = append(out, pad+zone.Mark("thread:"+msg.ID+":open", bar))
+	} else {
+		bar := lipgloss.NewStyle().Background(s.t.Block).Foreground(s.t.Link).Bold(true).Render(padRight(" "+ic.Reply+" Reply", bw))
+		out = append(out, pad+zone.Mark("thread:"+msg.ID+":reply", bar))
 	}
-	out = append(out, g+border.Render("╰"+strings.Repeat("─", cw-2)+"╯"))
 	return out
 }

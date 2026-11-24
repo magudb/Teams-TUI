@@ -135,15 +135,13 @@ func (m *Model) loadEvents(day time.Time) tea.Cmd {
 
 func (m *Model) loadFiles() tea.Cmd {
 	svc := m.svc
+	loc := m.fileLoc
 	var parent *model.DriveItem
-	key := "recent"
+	key := loc
 	if len(m.fileStack) > 0 {
 		p := m.fileStack[len(m.fileStack)-1]
 		parent = &p
-		key = p.ID
-	}
-	if key == "recent" && m.filesKey == "root" {
-		key = "root"
+		key = loc + "/" + p.ID
 	}
 	return func() tea.Msg {
 		c, cancel := ctx()
@@ -153,8 +151,15 @@ func (m *Model) loadFiles() tea.Cmd {
 		switch {
 		case parent != nil:
 			items, err = svc.Folder(c, parent)
-		case key == "root":
+		case loc == "loc:root":
 			items, err = svc.Folder(c, nil)
+		case loc == "loc:shared":
+			items, err = svc.SharedFiles(c)
+		case strings.HasPrefix(loc, "loc:chan:"):
+			parts := strings.SplitN(strings.TrimPrefix(loc, "loc:chan:"), ":", 2)
+			if len(parts) == 2 {
+				items, err = svc.ChannelFiles(c, parts[0], parts[1])
+			}
 		default:
 			items, err = svc.RecentFiles(c)
 		}
@@ -239,13 +244,13 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			isActive := m.conv != nil && m.conv.ref.Kind == model.KindChat && m.conv.ref.ChatID == c.ID
 			fromOther := c.LastMessage.From.ID != m.me.ID && c.LastMessage.From.ID != ""
 			if first && c.Unread(m.me.ID) {
-				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: c.LastMessage.From.DisplayName + " in " + c.Title(m.me.ID), preview: c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID})
+				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: firstName(c.LastMessage.From.DisplayName) + " messaged you", preview: c.Title(m.me.ID) + ": " + c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID})
 			}
 			if seen && prev != c.LastMessage.ID && fromOther && !c.LastMessage.Deleted {
 				if isActive {
 					cmds = append(cmds, m.loadMessages(m.conv.ref, "", false, true))
 				}
-				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: c.LastMessage.From.DisplayName + " in " + c.Title(m.me.ID), preview: c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID, read: isActive && m.focused})
+				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: firstName(c.LastMessage.From.DisplayName) + " messaged you", preview: c.Title(m.me.ID) + ": " + c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID, read: isActive && m.focused})
 				if !m.st.Muted["chat:"+c.ID] && (!isActive || !m.focused) {
 					m.notify(c.LastMessage.From.DisplayName, c.LastMessage.Text, c.Title(m.me.ID))
 				}
@@ -332,6 +337,9 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 				m.markChannelSeen(cv.ref)
 			}
 		}
+		if cv.loadedOnce && !msg.older {
+			m.noteReactions(cv, msg.msgs)
+		}
 		changed := cv.merge(msg.msgs, msg.older)
 		if msg.older || !cv.loadedOnce {
 			cv.next = msg.next
@@ -404,7 +412,18 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			m.tabFiles = msg.items
 			return nil
 		}
+		if strings.HasPrefix(msg.key, "loc:chan:") && !strings.Contains(msg.key, "/") {
+			m.fileCounts[msg.key] = len(msg.items)
+		}
+		cur := m.fileLoc
+		if len(m.fileStack) > 0 {
+			cur += "/" + m.fileStack[len(m.fileStack)-1].ID
+		}
+		if msg.key != cur {
+			return nil // stale
+		}
 		m.files = msg.items
+		m.fileSel = max(0, min(m.fileSel, len(m.files)-1))
 
 	case searchMsg:
 		if msg.q != m.searchQ {
@@ -492,6 +511,9 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		if msg.presenc {
 			cmds = append(cmds, m.loadMyPresence())
 		}
+		if msg.reloadFiles {
+			cmds = append(cmds, m.loadFiles())
+		}
 		if msg.open != "" && msg.err == nil {
 			if err := notify.Open(msg.open); err != nil {
 				m.errToast(err)
@@ -567,12 +589,13 @@ func (m *Model) scanMentions(cv *convView, mm model.Message) {
 	}
 	for _, mention := range mm.Mentions {
 		if mention.UserID == m.me.ID {
-			title := mm.From.DisplayName + " mentioned you"
+			title := firstName(mm.From.DisplayName) + " mentioned you"
+			preview := htmltext.Plain(mm.Body)
 			if t := m.convTitle(cv.ref); t != "" {
-				title += " in " + t
+				preview = t + ": " + preview
 			}
 			m.addActivity(activityItem{
-				at: mm.Created, kind: "mention", title: title, preview: htmltext.Plain(mm.Body),
+				at: mm.Created, kind: "mention", title: title, preview: preview,
 				ref: cv.ref, msgID: mm.ID, read: time.Since(mm.Created) > 7*24*time.Hour,
 			})
 			return
@@ -603,8 +626,13 @@ func (m *Model) checkUpcoming() {
 		if e.IsCancelled || e.Response == "declined" || notifiedEvents[e.ID] {
 			continue
 		}
-		if d := e.Start.Sub(now); d > 0 && d <= 5*time.Minute {
+		if d := e.Start.Sub(now); d > 0 && d <= time.Duration(m.cfg.MeetingReminderMinutes)*time.Minute {
 			notifiedEvents[e.ID] = true
+			prev := "Starts " + e.Start.Format(m.cfg.TimeFormat)
+			if n := len(e.Attendees); n > 0 {
+				prev += " · " + itoa(n) + " attendees"
+			}
+			m.addActivity(activityItem{at: now, kind: "meeting", title: e.Subject, preview: prev, msgID: e.ID})
 			hint := ""
 			if e.JoinURL != "" {
 				hint = " — alt+j to join"
@@ -662,5 +690,44 @@ func (m *Model) downloadPath(name string) string {
 			return p
 		}
 		p = filepath.Join(dir, base+" ("+itoa(i)+")"+ext)
+	}
+}
+
+func firstName(n string) string {
+	if f := strings.Fields(n); len(f) > 0 {
+		return f[0]
+	}
+	return n
+}
+
+// noteReactions adds Activity items for new reactions by others on my messages.
+func (m *Model) noteReactions(cv *convView, incoming []model.Message) {
+	if m.me.ID == "" {
+		return
+	}
+	old := map[string]map[string]bool{}
+	for _, x := range cv.msgs {
+		if x.From.ID != m.me.ID {
+			continue
+		}
+		set := map[string]bool{}
+		for _, r := range x.Reactions {
+			set[r.UserID+r.Type] = true
+		}
+		old[x.ID] = set
+	}
+	for _, x := range incoming {
+		prev, ok := old[x.ID]
+		if !ok {
+			continue
+		}
+		for _, r := range x.Reactions {
+			if r.UserID == m.me.ID || prev[r.UserID+r.Type] {
+				continue
+			}
+			who := firstName(m.userName(r.UserID))
+			m.addActivity(activityItem{at: time.Now(), kind: "reaction", title: who + " reacted " + r.Type,
+				preview: "to: " + htmltext.Plain(x.Body), ref: cv.ref, msgID: x.ID + ":r:" + r.UserID + r.Type})
+		}
 	}
 }

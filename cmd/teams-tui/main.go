@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/magudb/Teams-TUI/internal/auth"
 	"github.com/magudb/Teams-TUI/internal/config"
 	"github.com/magudb/Teams-TUI/internal/demo"
@@ -72,12 +73,15 @@ func main() {
 		return
 	}
 
-	if *demoMode {
-		st := state.Load("")
-		m := ui.New(demo.New(), cfg, st, true)
+	ui.SetVersion(version)
+	runDemo := func() {
+		m := ui.New(demo.New(), cfg, state.Load(""), true)
 		if err := ui.Run(m); err != nil {
 			fail(err)
 		}
+	}
+	if *demoMode {
+		runDemo()
 		return
 	}
 
@@ -90,10 +94,12 @@ func main() {
 		fmt.Println("Signed out.")
 		return
 	case "login":
-		if err := login(a); err != nil {
-			fail(err)
+		switch signIn(a, &cfg) {
+		case ui.LoginDemo:
+			runDemo()
+		case ui.LoginOK:
+			fmt.Println("Signed in. Run `teams-tui` to start.")
 		}
-		fmt.Println("Signed in. Run `teams-tui` to start.")
 		return
 	case "":
 	default:
@@ -102,8 +108,12 @@ func main() {
 	}
 
 	if !a.LoggedIn() {
-		if err := login(a); err != nil {
-			fail(err)
+		switch signIn(a, &cfg) {
+		case ui.LoginDemo:
+			runDemo()
+			return
+		case ui.LoginQuit:
+			return
 		}
 	}
 	client := graph.New(a)
@@ -114,17 +124,38 @@ func main() {
 	if err != nil {
 		if errors.Is(err, auth.ErrNotLoggedIn) || graph.IsStatus(err, 401) {
 			fmt.Fprintln(os.Stderr, "Session expired, signing in again…")
-			if err := login(a); err != nil {
-				fail(err)
+			switch signIn(a, &cfg) {
+			case ui.LoginDemo:
+				runDemo()
+				return
+			case ui.LoginQuit:
+				return
 			}
 		} else {
 			fail(fmt.Errorf("could not reach Microsoft Graph: %w", err))
 		}
 	}
 	m := ui.New(client, cfg, state.Load(dir), false)
+	m.SetSignOut(a.Logout)
 	if err := ui.Run(m); err != nil {
 		fail(err)
 	}
+}
+
+// signIn shows the sign-in screen in a terminal, or prints the device code
+// when there is no terminal.
+func signIn(a *auth.Authenticator, cfg *config.Config) ui.LoginResult {
+	if term.IsTerminal(os.Stdout.Fd()) {
+		res, err := ui.RunLogin(a, cfg)
+		if err != nil {
+			fail(err)
+		}
+		return res
+	}
+	if err := login(a); err != nil {
+		fail(err)
+	}
+	return ui.LoginOK
 }
 
 func login(a *auth.Authenticator) error {

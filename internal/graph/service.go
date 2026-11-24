@@ -337,49 +337,9 @@ func (c *Client) Upload(ctx context.Context, ref model.ConvRef, localPath string
 		itemPath = "/me/drive/root:/Microsoft%20Teams%20Chat%20Files/" + esc(name) + ":"
 	}
 
-	var item gDriveItem
-	if st.Size() <= 4*1024*1024 {
-		if err := c.do(ctx, http.MethodPut, itemPath+"/content", io.Reader(f), &item, withHeader("Content-Type", "application/octet-stream")); err != nil {
-			return model.Attachment{}, err
-		}
-	} else {
-		var sess struct {
-			UploadURL string `json:"uploadUrl"`
-		}
-		if err := c.do(ctx, http.MethodPost, itemPath+"/createUploadSession", map[string]any{"item": map[string]any{"@microsoft.graph.conflictBehavior": "rename"}}, &sess); err != nil {
-			return model.Attachment{}, err
-		}
-		const chunk = 320 * 1024 * 16 // 5 MiB, multiple of 320 KiB
-		buf := make([]byte, chunk)
-		var off int64
-		for off < st.Size() {
-			n, rerr := io.ReadFull(f, buf)
-			if n == 0 {
-				if rerr != nil {
-					return model.Attachment{}, rerr
-				}
-				break
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf[:n]))
-			if err != nil {
-				return model.Attachment{}, err
-			}
-			req.ContentLength = int64(n)
-			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, off+int64(n)-1, st.Size()))
-			resp, err := c.http.Do(req)
-			if err != nil {
-				return model.Attachment{}, err
-			}
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode >= 400 {
-				return model.Attachment{}, fmt.Errorf("upload failed: %s", b)
-			}
-			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-				_ = jsonUnmarshal(b, &item)
-			}
-			off += int64(n)
-		}
+	item, err := c.putFile(ctx, itemPath, f, st.Size())
+	if err != nil {
+		return model.Attachment{}, err
 	}
 	if ref.Kind == model.KindChat && item.ID != "" {
 		// Make the file viewable by people in the organisation so chat members can open it.
@@ -395,6 +355,86 @@ func (c *Client) Upload(ctx context.Context, ref model.ConvRef, localPath string
 		return model.Attachment{}, fmt.Errorf("upload succeeded but no eTag returned")
 	}
 	return model.Attachment{ID: strings.ToLower(guid), ContentType: "reference", ContentURL: item.WebURL, Name: item.Name}, nil
+}
+
+// putFile uploads r (size bytes) to itemPath ("…/parent:/name:"), using an
+// upload session for files over 4 MB.
+func (c *Client) putFile(ctx context.Context, itemPath string, f io.Reader, size int64) (gDriveItem, error) {
+	var item gDriveItem
+	if size <= 4*1024*1024 {
+		if err := c.do(ctx, http.MethodPut, itemPath+"/content", io.Reader(f), &item, withHeader("Content-Type", "application/octet-stream")); err != nil {
+			return item, err
+		}
+	} else {
+		var sess struct {
+			UploadURL string `json:"uploadUrl"`
+		}
+		if err := c.do(ctx, http.MethodPost, itemPath+"/createUploadSession", map[string]any{"item": map[string]any{"@microsoft.graph.conflictBehavior": "rename"}}, &sess); err != nil {
+			return item, err
+		}
+		const chunk = 320 * 1024 * 16 // 5 MiB, multiple of 320 KiB
+		buf := make([]byte, chunk)
+		var off int64
+		for off < size {
+			n, rerr := io.ReadFull(f, buf)
+			if n == 0 {
+				if rerr != nil {
+					return item, rerr
+				}
+				break
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf[:n]))
+			if err != nil {
+				return item, err
+			}
+			req.ContentLength = int64(n)
+			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, off+int64(n)-1, size))
+			resp, err := c.http.Do(req)
+			if err != nil {
+				return item, err
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				return item, fmt.Errorf("upload failed: %s", b)
+			}
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+				_ = jsonUnmarshal(b, &item)
+			}
+			off += int64(n)
+		}
+	}
+	return item, nil
+}
+
+// SharedFiles lists files shared with the signed-in user.
+func (c *Client) SharedFiles(ctx context.Context) ([]model.DriveItem, error) {
+	raw, err := list[gDriveItem](ctx, c, "/me/drive/sharedWithMe?$top=100", 1)
+	out := make([]model.DriveItem, 0, len(raw))
+	for _, d := range raw {
+		out = append(out, d.toModel())
+	}
+	return out, err
+}
+
+// UploadFile uploads a local file into folder (nil = OneDrive root).
+func (c *Client) UploadFile(ctx context.Context, folder *model.DriveItem, localPath string) (model.DriveItem, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return model.DriveItem{}, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return model.DriveItem{}, err
+	}
+	name := esc(filepath.Base(localPath))
+	itemPath := "/me/drive/root:/" + name + ":"
+	if folder != nil {
+		itemPath = "/drives/" + esc(folder.DriveID) + "/items/" + esc(folder.ID) + ":/" + name + ":"
+	}
+	item, err := c.putFile(ctx, itemPath, f, st.Size())
+	return item.toModel(), err
 }
 
 // ---- presence --------------------------------------------------------------

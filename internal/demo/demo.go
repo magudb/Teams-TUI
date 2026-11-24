@@ -872,3 +872,26 @@ var sampleConnector string
 
 //go:embed samples/table.json
 var sampleTable string
+
+// SharedFiles lists files shared with the demo user.
+func (s *Service) SharedFiles(ctx context.Context) ([]model.DriveItem, error) {
+	return []model.DriveItem{
+		{ID: "sh1", Name: "Brand guidelines.pdf", Size: 3_100_000, Modified: time.Now().Add(-30 * time.Hour), ModifiedBy: "Emma Larsen", WebURL: "https://contoso.example/brand"},
+		{ID: "sh2", Name: "Team offsite.xlsx", Size: 54_000, Modified: time.Now().Add(-75 * time.Hour), ModifiedBy: "Noah Petersen", WebURL: "https://contoso.example/offsite"},
+	}, nil
+}
+
+// UploadFile pretends to upload a file to OneDrive.
+func (s *Service) UploadFile(ctx context.Context, folder *model.DriveItem, localPath string) (model.DriveItem, error) {
+	st, err := os.Stat(localPath)
+	if err != nil {
+		return model.DriveItem{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it := model.DriveItem{ID: s.id(), Name: filepath.Base(localPath), Size: st.Size(), Modified: time.Now(), ModifiedBy: s.me.DisplayName, WebURL: "file://" + localPath}
+	if folder == nil {
+		s.files = append(s.files, it)
+	}
+	return it, nil
+}

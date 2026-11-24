@@ -24,10 +24,11 @@ const (
 )
 
 type modalItem struct {
-	label string
-	hint  string
-	run   func(m *Model) tea.Cmd
-	user  *model.User
+	section string // optional group heading (command palette)
+	label   string
+	hint    string
+	run     func(m *Model) tea.Cmd
+	user    *model.User
 }
 
 type modal struct {
@@ -132,10 +133,10 @@ func (m *Model) openPrompt(title, placeholder, value string, fn func(m *Model, s
 }
 
 func (m *Model) openConfirm(title string, fn func(m *Model) tea.Cmd) {
-	m.openList(title, []modalItem{
+	m.openList("Confirm\n"+title, []modalItem{
 		{label: "Yes", run: fn},
 		{label: "Cancel", run: func(m *Model) tea.Cmd { return nil }},
-	}, false).width = max(30, ansi.StringWidth(title)+6)
+	}, false).width = min(70, max(36, ansi.StringWidth(title)+6))
 }
 
 // ---- concrete modals ----------------------------------------------------------
@@ -616,10 +617,20 @@ func (m *Model) modalView() string {
 	md := m.modal
 	s := m.s
 	w := min(md.width, m.w-4)
-	inner := w - 4
+	inner := w - 2
 	maxRows := max(3, m.h-12)
+	titleLines := strings.Split(md.title, "\n")
 	var lines []string
-	lines = append(lines, s.Title.Render(trunc(md.title, inner)), "")
+	for _, extra := range titleLines[1:] {
+		for _, l := range strings.Split(ansi.Wrap(extra, inner-1, " "), "\n") {
+			lines = append(lines, s.Text.Render(l))
+		}
+	}
+	if len(titleLines) > 1 {
+		lines = append(lines, "")
+	}
+	prompt := s.Accent.Bold(true).Render(s.ic.Prompt) + " "
+	sel := func(l string) string { return withBg(s.Sel.Render(ansi.Strip(l)), s.bgAccent, inner) }
 
 	switch md.kind {
 	case mText:
@@ -628,26 +639,28 @@ func (m *Model) modalView() string {
 		for _, l := range md.text[md.scroll:end] {
 			lines = append(lines, trunc(l, inner))
 		}
-		hint := "↑/↓ scroll · esc close"
+		hint := "↑↓ scroll · esc close"
 		if md.raw != "" {
-			hint = "↑/↓ scroll · y copy · s save to Downloads · esc close"
+			hint = "↑↓ scroll · y copy · s save to Downloads · esc close"
 		}
-		lines = append(lines, "", s.Faint.Render(hint))
+		lines = append(lines, "", s.Muted.Render(hint))
 	case mPrompt:
 		md.input.Width = inner - 3
+		md.input.Prompt = prompt
 		lines = append(lines, md.input.View(), "")
-		lines = append(lines, zone.Mark("m:ok", s.ButtonHot.Render(" OK "))+"  "+zone.Mark("m:cancel", s.Button.Render("[Cancel]")))
+		lines = append(lines, zone.Mark("m:ok", s.ButtonHot.Render(" OK "))+"  "+zone.Mark("m:cancel", s.Button.Render("Cancel"))+"  "+s.Muted.Render("enter ok · esc cancel"))
 	case mForm:
 		for i, l := range md.labels {
 			md.fields[i].Width = inner - 3
+			md.fields[i].Prompt = prompt
 			st := s.Muted
 			if i == md.fieldSel {
-				st = s.Accent
+				st = s.Accent.Bold(true)
 			}
 			lines = append(lines, st.Render(l))
 			lines = append(lines, zone.Mark("mf:"+itoa(i), padRight(md.fields[i].View(), inner)))
 		}
-		lines = append(lines, "", zone.Mark("m:ok", s.ButtonHot.Render(" Schedule "))+"  "+zone.Mark("m:cancel", s.Button.Render("[Cancel]"))+"  "+s.Faint.Render("tab next · ctrl+s save"))
+		lines = append(lines, "", zone.Mark("m:ok", s.ButtonHot.Render(" Schedule "))+"  "+zone.Mark("m:cancel", s.Button.Render("Cancel"))+"  "+s.Muted.Render("tab next · ctrl+s save"))
 	default:
 		if md.kind == mPeople && len(md.chosen) > 0 {
 			var chips []string
@@ -658,14 +671,14 @@ func (m *Model) modalView() string {
 		}
 		if md.hasInput {
 			md.input.Width = inner - 3
+			md.input.Prompt = prompt
 			lines = append(lines, md.input.View(), "")
 		}
 		if md.grid {
 			cols := md.gridCols()
 			var row []string
 			for i, it := range md.items {
-				cell := " " + it.label + " "
-				cell = padRight(cell, 4)
+				cell := padRight(" "+it.label+" ", 4)
 				if i == md.sel {
 					cell = s.Sel.Render(cell)
 				}
@@ -676,7 +689,7 @@ func (m *Model) modalView() string {
 				}
 			}
 			if md.sel >= 0 && md.sel < len(md.items) {
-				lines = append(lines, "", s.Faint.Render(trunc(md.items[md.sel].hint, inner)))
+				lines = append(lines, "", s.Muted.Render(trunc(md.items[md.sel].hint, inner)))
 			}
 		} else {
 			if md.sel < md.scroll {
@@ -686,32 +699,48 @@ func (m *Model) modalView() string {
 				md.scroll = md.sel - maxRows + 1
 			}
 			end := min(len(md.items), md.scroll+maxRows)
+			section := ""
 			for i := md.scroll; i < end; i++ {
 				it := md.items[i]
-				l := " " + it.label
-				if it.hint != "" {
-					l = spread(l, s.Faint.Render(trunc(it.hint, inner/2))+" ", inner)
+				if it.section != "" && it.section != section {
+					section = it.section
+					if i > md.scroll {
+						lines = append(lines, "")
+					}
+					lines = append(lines, s.Muted.Bold(true).Render(section))
 				}
-				l = padRight(l, inner)
+				l := it.label
+				if it.hint != "" {
+					l = spread(l, s.Muted.Render(trunc(it.hint, inner/3)), inner)
+				}
 				if i == md.sel {
-					l = s.Sel.Render(padRight(ansi.Strip(l), inner))
+					l = sel(l)
 				}
 				lines = append(lines, zone.Mark("mi:"+itoa(i), l))
 			}
 			if len(md.items) == 0 {
 				if md.kind == mPeople {
-					lines = append(lines, s.Faint.Render(" Searching…"))
+					lines = append(lines, s.Muted.Render("Searching…"))
 				} else {
-					lines = append(lines, s.Faint.Render(" No matches"))
+					lines = append(lines, s.Muted.Render("No matches"))
 				}
 			}
-		}
-		if md.kind == mPeople && md.multi {
-			lines = append(lines, "", zone.Mark("m:ok", s.ButtonHot.Render(" Done "))+"  "+s.Faint.Render("enter add · ctrl+s done · esc cancel"))
+			lines = append(lines, "")
+			switch {
+			case md.kind == mPeople && md.multi:
+				lines = append(lines, zone.Mark("m:ok", s.ButtonHot.Render(" Done "))+"  "+s.Muted.Render("enter add · ctrl+s done · esc cancel"))
+			case md.hasInput:
+				lines = append(lines, s.Muted.Render("↑↓ move · enter run · esc close"))
+			default:
+				lines = append(lines, s.Muted.Render("↑↓ move · enter choose · esc close"))
+			}
 		}
 	}
-	body := strings.Join(lines, "\n")
-	return zone.Mark("modal", s.Modal.Width(w-2).Render(body))
+	out := []string{headerBar(s.Inverse, s.Inverse.Bold(true).Render(strings.ToUpper(trunc(titleLines[0], inner-6))), zone.Mark("m:cancel", "esc"), w)}
+	for _, l := range lines {
+		out = append(out, withBg(" "+l, s.bgCard, w))
+	}
+	return zone.Mark("modal", strings.Join(out, "\n"))
 }
 
 // overlay draws fg centered on top of bg.

@@ -3,12 +3,9 @@ package ui
 import (
 	"sort"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	zone "github.com/lrstanley/bubblezone"
 	"github.com/magudb/Teams-TUI/internal/model"
 )
 
@@ -18,6 +15,9 @@ type sideItem struct {
 	lines      []string
 	selectable bool
 	open       func(m *Model) tea.Cmd // enter / click
+	// selLines renders the item when selected (accent fill); nil = derive
+	// from lines by stripping styles.
+	selLines func() []string
 }
 
 // sortedChats returns pinned chats (in the user's pinned order) and the
@@ -35,338 +35,13 @@ func (m *Model) sortedChats() (pinned, recent []model.Chat) {
 			recent = append(recent, c)
 		}
 	}
-	for _, id := range m.st.PinOrder {
-		if c, ok := byID[id]; ok {
+	for _, key := range m.st.Favorites {
+		if c, ok := byID[strings.TrimPrefix(key, "chat:")]; ok && strings.HasPrefix(key, "chat:") {
 			pinned = append(pinned, c)
 		}
 	}
 	model.SortChats(recent)
 	return
-}
-
-func (m *Model) chatItem(c model.Chat, w int) sideItem {
-	s := m.s
-	title := c.Title(m.me.ID)
-	unread := c.Unread(m.me.ID)
-	muted := m.st.Muted["chat:"+c.ID]
-	// avatar chip + presence, like the Teams chat list
-	neutral := lipgloss.NewStyle().Background(s.t.Border).Foreground(s.t.Text).Bold(true)
-	icon := " " + neutral.Render(padRight(" "+initials(title), 4))
-	switch {
-	case c.ChatType == "oneOnOne":
-		if o, ok := c.Other(m.me.ID); ok {
-			p, known := m.presence[o.ID]
-			icon = s.presenceDot(p, known) + s.avatar(o.ID, o.DisplayName)
-		}
-	case c.ChatType == "meeting":
-		icon = " " + neutral.Render(" ▣  ")
-	default:
-		icon = " " + neutral.Render(padRight(" "+initials(title), 4))
-	}
-	ts := ""
-	preview := ""
-	if lm := c.LastMessage; lm != nil {
-		ts = relTime(lm.Created, m.cfg.TimeFormat)
-		who := ""
-		if lm.From.ID == m.me.ID {
-			who = "You: "
-		} else if c.ChatType != "oneOnOne" && lm.From.DisplayName != "" {
-			who = strings.Fields(lm.From.DisplayName)[0] + ": "
-		}
-		preview = who + plainOneLine(lm.Text)
-		if lm.Deleted {
-			preview = "This message has been deleted."
-		}
-	}
-	nameStyle := s.Text
-	if m.dragKey == "chat:"+c.ID {
-		nameStyle = s.Accent.Bold(true)
-	}
-	prevStyle := s.Faint
-	if unread && !muted {
-		nameStyle = s.Bold
-		prevStyle = s.Text
-		ts = s.Accent.Bold(true).Render("● ") + ts
-	}
-	suffix := ""
-	if muted {
-		suffix = " " + s.Faint.Render("🔕")
-	}
-	line1 := spread(" "+icon+" "+nameStyle.Render(trunc(title, w-16))+suffix, s.Faint.Render(ts)+" ", w)
-	line2 := "       " + prevStyle.Render(trunc(preview, w-8))
-	id := c.ID
-	return sideItem{key: "chat:" + c.ID, lines: []string{line1, line2}, selectable: true, open: func(m *Model) tea.Cmd {
-		return m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: id})
-	}}
-}
-
-func header(s styles, text string, w int) string {
-	return s.Faint.Render(trunc(" "+strings.ToUpper(text), w))
-}
-
-func (m *Model) sideItems(w int) []sideItem {
-	s := m.s
-	var items []sideItem
-	switch m.section {
-	case SecChat:
-		if m.cfg.CombinedChat {
-			items = append(items, m.combinedItems(w)...)
-		} else {
-			items = append(items, m.chatListItems(w, false)...)
-		}
-
-	case SecTeams:
-		items = append(items, m.teamTreeItems(w)...)
-
-	case SecActivity:
-		if len(m.activity) == 0 {
-			items = append(items, sideItem{lines: []string{s.Muted.Render(" No new activity"), "", s.Faint.Render(" Mentions and new messages"), s.Faint.Render(" show up here.")}})
-		}
-		for i, a := range m.activity {
-			a := a
-			icon := s.Accent.Render("💬")
-			if a.kind == "mention" {
-				icon = s.Warn.Render("＠")
-			}
-			st := s.Text
-			if !a.read {
-				st = s.Bold
-			}
-			l1 := spread(" "+icon+" "+st.Render(trunc(a.title, w-12)), s.Faint.Render(relTime(a.at, m.cfg.TimeFormat))+" ", w)
-			l2 := "    " + s.Faint.Render(trunc(plainOneLine(a.preview), w-5))
-			idx := i
-			items = append(items, sideItem{key: "act:" + itoa(i) + a.msgID, lines: []string{l1, l2}, selectable: true, open: func(m *Model) tea.Cmd {
-				m.activity[idx].read = true
-				return m.openConvAt(a.ref, a.msgID)
-			}})
-		}
-
-	case SecCalendar:
-		var day []model.Event
-		for _, e := range m.events {
-			if overlapsDay(e, m.calDay) {
-				day = append(day, e)
-			}
-		}
-		if len(day) == 0 {
-			items = append(items, sideItem{lines: []string{s.Muted.Render(" No meetings"), "", s.Faint.Render(" Press n to schedule one.")}})
-		}
-		now := time.Now()
-		for _, e := range day {
-			e := e
-			tm := e.Start.Format(m.cfg.TimeFormat) + "–" + e.End.Format(m.cfg.TimeFormat)
-			if e.IsAllDay {
-				tm = "All day"
-			}
-			st := s.Text
-			mark := " "
-			switch {
-			case e.IsCancelled || e.Response == "declined":
-				st = s.Faint.Strikethrough(true)
-			case now.After(e.Start) && now.Before(e.End):
-				mark = s.OK.Render("▌")
-				st = s.Bold
-			case now.After(e.End):
-				st = s.Muted
-			}
-			resp := ""
-			switch e.Response {
-			case "notResponded", "none":
-				resp = s.Warn.Render(" ?")
-			case "tentativelyAccepted":
-				resp = s.Faint.Render(" ~")
-			}
-			l1 := mark + st.Render(trunc(e.Subject, w-4)) + resp
-			loc := tm
-			if e.IsOnline {
-				loc += " · Teams"
-			} else if e.Location != "" {
-				loc += " · " + e.Location
-			}
-			items = append(items, sideItem{key: "ev:" + e.ID, lines: []string{l1, "  " + s.Faint.Render(trunc(loc, w-3))}, selectable: true, open: func(m *Model) tea.Cmd {
-				m.selEvent = e.ID
-				return nil
-			}})
-		}
-
-	case SecFiles:
-		if len(m.fileStack) > 0 {
-			items = append(items, sideItem{key: "file:..", selectable: true, lines: []string{" " + s.Accent.Render("↰ ..")}, open: func(m *Model) tea.Cmd {
-				m.fileStack = m.fileStack[:len(m.fileStack)-1]
-				m.files = nil
-				return m.loadFiles()
-			}})
-		}
-		if m.files == nil {
-			items = append(items, sideItem{lines: []string{s.Muted.Render(" Loading files…")}})
-		}
-		for _, f := range m.files {
-			f := f
-			icon := fileIcon(f)
-			meta := relTime(f.Modified, m.cfg.TimeFormat)
-			if !f.IsFolder {
-				meta = humanSize(f.Size) + " · " + meta
-			}
-			items = append(items, sideItem{key: "file:" + f.ID, selectable: true,
-				lines: []string{" " + icon + " " + trunc(f.Name, w-5), "    " + s.Faint.Render(trunc(meta, w-5))},
-				open: func(m *Model) tea.Cmd {
-					if f.IsFolder {
-						m.fileStack = append(m.fileStack, f)
-						m.files = nil
-						return m.loadFiles()
-					}
-					m.selFile = f.ID
-					return nil
-				}})
-		}
-
-	case SecSearch:
-		for _, h := range m.hits {
-			h := h
-			where := m.convTitle(h.Ref)
-			l1 := spread(" "+s.Bold.Render(trunc(h.From, w/2)), s.Faint.Render(relTime(h.Created, m.cfg.TimeFormat))+" ", w)
-			l2 := "  " + trunc(plainOneLine(h.Summary), w-3)
-			l3 := "  " + s.Faint.Render(trunc(where, w-3))
-			items = append(items, sideItem{key: "hit:" + h.MsgID, selectable: true, lines: []string{l1, l2, l3}, open: func(m *Model) tea.Cmd {
-				return m.openConvAt(h.Ref, h.MsgID)
-			}})
-		}
-		if len(m.hits) == 0 && m.searchQ == "" {
-			items = append(items, sideItem{lines: []string{s.Faint.Render(" Type and press enter to search"), s.Faint.Render(" all chats and channels.")}})
-		}
-	}
-	return items
-}
-
-// chatListItems renders pinned + recent chats. In the combined view the
-// section headers are smaller sub-headers.
-func (m *Model) chatListItems(w int, combined bool) []sideItem {
-	s := m.s
-	var items []sideItem
-	hdr := func(t string) {
-		if combined {
-			items = append(items, sideItem{lines: []string{s.Faint.Render(trunc("   "+t, w))}})
-		} else {
-			items = append(items, sideItem{lines: []string{header(s, t, w)}})
-		}
-	}
-	pinned, recent := m.sortedChats()
-	if len(pinned) > 0 {
-		hdr("Pinned")
-		for _, c := range pinned {
-			items = append(items, m.chatItem(c, w))
-		}
-		if !combined {
-			items = append(items, sideItem{lines: []string{""}})
-		}
-		hdr("Recent")
-	} else if !combined {
-		hdr("Recent")
-	}
-	for _, c := range recent {
-		items = append(items, m.chatItem(c, w))
-	}
-	if !m.chatsLoaded {
-		items = append(items, sideItem{lines: []string{s.Muted.Render(" " + m.spinner.View() + " Loading chats…")}})
-	}
-	return items
-}
-
-// teamTreeItems renders the teams/channels tree (with hidden teams at the end).
-func (m *Model) teamTreeItems(w int) []sideItem {
-	s := m.s
-	var items []sideItem
-	if len(m.teams) == 0 {
-		items = append(items, sideItem{lines: []string{s.Muted.Render(" Loading teams…")}})
-	}
-	visible, hidden := m.orderedTeams()
-	for _, t := range visible {
-		items = append(items, m.teamItems(t, w, false)...)
-	}
-	if len(hidden) > 0 {
-		exp := m.st.Expanded[hiddenTeamsKey]
-		arrow := "▸"
-		if exp {
-			arrow = "▾"
-		}
-		items = append(items, sideItem{key: "hidden:", selectable: true,
-			lines: []string{" " + s.Muted.Render(arrow+" Hidden teams ("+itoa(len(hidden))+")")},
-			open:  func(m *Model) tea.Cmd { return m.toggleTeam(hiddenTeamsKey) }})
-		if exp {
-			for _, t := range hidden {
-				items = append(items, m.teamItems(t, w, true)...)
-			}
-		}
-	}
-	return items
-}
-
-func (m *Model) teamItems(t model.Team, w int, dim bool) []sideItem {
-	s := m.s
-	var items []sideItem
-	exp := m.st.Expanded[t.ID]
-	arrow := "▸"
-	if exp {
-		arrow = "▾"
-	}
-	nameStyle := s.Bold
-	if dim {
-		nameStyle = s.Muted
-	}
-	if m.dragKey == "team:"+t.ID {
-		nameStyle = s.Accent.Bold(true)
-	}
-	badge := s.ChipMine.Render(" " + initials(t.DisplayName) + " ")
-	id := t.ID
-	dot := ""
-	if !exp {
-		for _, ch := range m.channels[t.ID] {
-			if m.channelUnread(ch) && !m.st.Muted[chanKey(t.ID, ch.ID)] {
-				dot = " " + s.Accent.Render("●")
-				break
-			}
-		}
-	}
-	items = append(items, sideItem{key: "team:" + t.ID, selectable: true,
-		lines: []string{" " + s.Muted.Render(arrow) + " " + badge + " " + nameStyle.Render(trunc(t.DisplayName, w-12)) + dot},
-		open:  func(m *Model) tea.Cmd { return m.toggleTeam(id) }})
-	if !exp {
-		return items
-	}
-	chs, ok := m.channels[t.ID]
-	if !ok {
-		items = append(items, sideItem{lines: []string{s.Faint.Render("      loading…")}})
-	}
-	for _, ch := range chs {
-		ch := ch
-		icon := "#"
-		if ch.MembershipType == "private" {
-			icon = "🔒"
-		} else if ch.MembershipType == "shared" {
-			icon = "⇄"
-		}
-		active := m.conv != nil && m.conv.ref.Kind == model.KindChannel && m.conv.ref.ChannelID == ch.ID
-		st := s.Text
-		unread := m.channelUnread(ch)
-		switch {
-		case active:
-			st = s.Accent.Bold(true)
-		case unread:
-			st = s.Bold
-		case dim:
-			st = s.Muted
-		}
-		dot := ""
-		if unread {
-			dot = " " + s.Accent.Render("●")
-		}
-		items = append(items, sideItem{key: "chan:" + ch.ID, selectable: true,
-			lines: []string{"      " + s.Faint.Render(icon) + " " + st.Render(trunc(ch.DisplayName, w-12)) + dot},
-			open: func(m *Model) tea.Cmd {
-				return m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: ch.TeamID, ChannelID: ch.ID})
-			}})
-	}
-	return items
 }
 
 func fileIcon(f model.DriveItem) string {
@@ -408,56 +83,6 @@ func (m *Model) toggleTeam(id string) tea.Cmd {
 	return nil
 }
 
-// sidebarHeader returns the header lines of the sidebar (title, buttons, inputs).
-func (m *Model) sidebarHeader(w int) []string {
-	s := m.s
-	title := s.Title.Render(" " + sectionNames[m.section])
-	var right string
-	btn := func(id, label string) string { return zone.Mark("sb:"+id, s.Button.Render(label)) }
-	switch m.section {
-	case SecChat:
-		right = btn("filter", "⌕") + " " + btn("newchat", "✎ New") + " "
-		if m.cfg.CombinedChat {
-			title = s.Title.Render(" Chat")
-		}
-	case SecTeams:
-		right = btn("refresh", "↻") + " "
-	case SecCalendar:
-		right = btn("prevday", "◀") + " " + btn("today", "Today") + " " + btn("nextday", "▶") + " " + btn("newmeeting", "+") + " "
-	case SecFiles:
-		label := "Recent"
-		if m.filesKey == "root" || len(m.fileStack) > 0 {
-			label = "My files"
-		}
-		right = btn("filesmode", "⇄ "+label) + " "
-	case SecActivity:
-		right = btn("readall", "✓ Mark all read") + " "
-	}
-	lines := []string{spread(title, right, w)}
-	switch m.section {
-	case SecChat:
-		if m.filtering || m.chatFilter.Value() != "" {
-			m.chatFilter.Width = w - 4
-			lines = append(lines, " "+m.chatFilter.View())
-		}
-	case SecSearch:
-		m.searchInput.Width = w - 5
-		lines = append(lines, " "+m.searchInput.View())
-	case SecCalendar:
-		lines = append(lines, s.Accent.Render(" "+dayLabel(m.calDay)+" · "+m.calDay.Format(m.cfg.DateFormat)))
-	case SecFiles:
-		if len(m.fileStack) > 0 {
-			var names []string
-			for _, f := range m.fileStack {
-				names = append(names, f.Name)
-			}
-			lines = append(lines, s.Faint.Render(" "+trunc("My files › "+strings.Join(names, " › "), w-2)))
-		}
-	}
-	lines = append(lines, s.Border.Render(strings.Repeat("─", w)))
-	return lines
-}
-
 type sideLayout struct {
 	lines []string
 	owner []int // item index per visible line
@@ -492,17 +117,25 @@ func (m *Model) layoutSidebar(w, h int) sideLayout {
 		if i == sel {
 			selStart = len(all)
 		}
-		for _, l := range it.lines {
-			if i == sel {
-				st := m.s.SelDim
-				if m.focus == FocusSidebar {
-					st = m.s.Sel
-				}
-				l = st.Render(padRight(ansi.Strip(l), w))
-				if m.focus == FocusSidebar {
-					l = m.s.Accent.Render("▎") + ansi.TruncateLeft(l, 1, "")
+		lines := it.lines
+		if i == sel {
+			if it.selLines != nil {
+				lines = it.selLines()
+			} else {
+				lines = make([]string, len(it.lines))
+				for k, l := range it.lines {
+					lines[k] = ansi.Strip(l)
 				}
 			}
+			// accent fill when the sidebar has focus, block fill otherwise
+			for k, l := range lines {
+				if it.selLines == nil {
+					l = m.s.Sel.Render(ansi.Strip(l))
+				}
+				lines[k] = withBg(l, styleOn(m.s.Sel), w)
+			}
+		}
+		for _, l := range lines {
 			all = append(all, l)
 			owner = append(owner, i)
 		}
@@ -610,7 +243,7 @@ func (m *Model) sideOpen() tea.Cmd {
 
 func (m *Model) selectedChatID() string {
 	k := m.sideSel[SecChat]
-	k = strings.TrimPrefix(k, "u:")
+	k = strings.TrimPrefix(strings.TrimPrefix(k, "u:"), "fav:")
 	if strings.HasPrefix(k, "chat:") {
 		return strings.TrimPrefix(k, "chat:")
 	}
@@ -639,21 +272,11 @@ func (m *Model) selectedEvent() *model.Event {
 	return nil
 }
 
-func (m *Model) selectedFile() *model.DriveItem {
-	id := strings.TrimPrefix(m.sideSel[SecFiles], "file:")
-	for i := range m.files {
-		if m.files[i].ID == id {
-			return &m.files[i]
-		}
-	}
-	return nil
-}
-
 func (m *Model) openChatActions(c *model.Chat) {
 	id := c.ID
-	pinLabel := "📌 Pin"
+	pinLabel := "★ Add to favorites"
 	if m.st.IsPinned(id) {
-		pinLabel = "📌 Unpin"
+		pinLabel = "☆ Remove from favorites"
 	}
 	muteLabel := "🔕 Mute notifications"
 	if m.st.Muted["chat:"+id] {
@@ -676,7 +299,7 @@ func (m *Model) openChatActions(c *model.Chat) {
 		{label: "✓ Mark as read", run: func(m *Model) tea.Cmd { return m.markRead(id) }},
 	}
 	if m.st.IsPinned(id) {
-		key := "chat:" + id
+		key := "fav:chat:" + id
 		items = append(items,
 			modalItem{label: "↑ Move up", hint: "alt+↑", run: func(m *Model) tea.Cmd { m.moveBy(key, -1); return nil }},
 			modalItem{label: "↓ Move down", hint: "alt+↓", run: func(m *Model) tea.Cmd { m.moveBy(key, 1); return nil }},
