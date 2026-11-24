@@ -58,7 +58,7 @@ By default the Chat tab shows everything in one list, like the "Chats and channe
 
 1. **Unread**: chats and channels with new messages.
 2. **Channels**: your teams and their channels.
-3. **Chats**: pinned chats, then recent ones.
+3. **Chats**: pinned chats, then recent ones. Choose **Load older chats** at the end of the list to fetch another page.
 
 Each section header can be collapsed. The separate Teams tab is hidden in this mode; set `"combined_chat": false` to get it back.
 
@@ -89,7 +89,7 @@ Graph doesn't expose the pins, custom team order or hidden teams you set in the 
 
 ## Signing in
 
-On the first run the app shows a sign-in screen with a **device code**: `o` opens `microsoft.com/devicelogin`, `c` copies the code, `↑↓` picks a tenant, and `d` starts demo mode instead. The token is cached in `~/.config/teams-tui/token.json` (mode 0600), and access tokens refresh on their own.
+On the first run the app shows a sign-in screen with a **device code**: `o` opens `microsoft.com/devicelogin`, `c` copies the code, `r` requests a fresh code, `↑↓` picks a tenant, and `d` starts demo mode instead. The token is cached in `~/.config/teams-tui/token.json` (mode 0600), and access tokens refresh on their own. The cache records the tenant authority and client ID used at sign-in. Changing either, or upgrading from a cache that predates these fields, requires signing in again.
 
 By default the app uses Microsoft's public *Microsoft Graph Command Line Tools* client id. Many tenants block that client or require admin consent for it. For an organisation it's better to register your own app:
 

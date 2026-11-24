@@ -456,14 +456,12 @@ func (m *Model) messagesKey(msg tea.KeyMsg) tea.Cmd {
 		cv.selectMsg(cv.sel + 1)
 	case "pgup", "ctrl+u":
 		cv.sel = -1
-		cv.dirty = true
 		cv.scrollBy(-h+2, h)
 		if cv.scroll == 0 && cv.next != "" {
 			return m.loadOlder(cv)
 		}
 	case "pgdown", "ctrl+d":
 		cv.sel = -1
-		cv.dirty = true
 		cv.scrollBy(h-2, h)
 	case "g", "home":
 		cv.selectMsg(0)

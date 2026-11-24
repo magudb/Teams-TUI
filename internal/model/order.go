@@ -4,16 +4,10 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
-)
-
-var (
-	collatorOnce sync.Once
-	collator     *collate.Collator
 )
 
 // userLocale returns the user's collation locale from the environment
@@ -34,22 +28,16 @@ func userLocale() language.Tag {
 	return language.English
 }
 
-// CompareNames compares display names the way Teams lists them: case
-// insensitive, using the user's locale (so æ, ø, å sort correctly in Danish).
-func CompareNames(a, b string) int {
-	collatorOnce.Do(func() { collator = collate.New(userLocale(), collate.IgnoreCase) })
-	return collator.CompareString(a, b)
-}
-
 // SortChannels orders channels like the Teams client: the channel named
 // "General" first, all others alphabetically.
 func SortChannels(chs []Channel) {
+	collator := collate.New(userLocale(), collate.IgnoreCase)
 	sort.SliceStable(chs, func(i, j int) bool {
 		gi, gj := chs[i].DisplayName == "General", chs[j].DisplayName == "General"
 		if gi != gj {
 			return gi
 		}
-		return CompareNames(chs[i].DisplayName, chs[j].DisplayName) < 0
+		return collator.CompareString(chs[i].DisplayName, chs[j].DisplayName) < 0
 	})
 }
 

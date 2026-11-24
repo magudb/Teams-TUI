@@ -49,6 +49,8 @@ var ErrNotLoggedIn = errors.New("not logged in")
 
 // Token is the cached token set.
 type Token struct {
+	ClientID     string    `json:"client_id"`
+	Tenant       string    `json:"tenant"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
@@ -76,15 +78,15 @@ func New(clientID, tenant, dir string) *Authenticator {
 	}
 	if b, err := os.ReadFile(a.path); err == nil {
 		var t Token
-		if json.Unmarshal(b, &t) == nil && t.RefreshToken != "" {
+		if json.Unmarshal(b, &t) == nil && t.RefreshToken != "" && strings.EqualFold(t.ClientID, clientID) && strings.EqualFold(t.Tenant, tenant) {
 			a.tok = &t
 		}
 	}
 	return a
 }
 
-func (a *Authenticator) endpoint(p string) string {
-	return "https://login.microsoftonline.com/" + url.PathEscape(a.Tenant) + "/oauth2/v2.0/" + p
+func endpoint(tenant, p string) string {
+	return "https://login.microsoftonline.com/" + url.PathEscape(tenant) + "/oauth2/v2.0/" + p
 }
 
 // LoggedIn reports whether a refresh token is cached.
@@ -149,8 +151,13 @@ func (a *Authenticator) post(ctx context.Context, endpoint string, form url.Valu
 // Login runs the device-code flow. prompt is called once with the code the
 // user must enter at the verification URL.
 func (a *Authenticator) Login(ctx context.Context, prompt func(DeviceCode)) error {
+	return a.LoginTenant(ctx, a.Tenant, prompt)
+}
+
+// LoginTenant keeps the selected authority local until sign-in succeeds.
+func (a *Authenticator) LoginTenant(ctx context.Context, tenant string, prompt func(DeviceCode)) error {
 	form := url.Values{"client_id": {a.ClientID}, "scope": {strings.Join(Scopes, " ")}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint("devicecode"), strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(tenant, "devicecode"), strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
@@ -159,14 +166,20 @@ func (a *Authenticator) Login(ctx context.Context, prompt func(DeviceCode)) erro
 	if err != nil {
 		return err
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("device code request failed: %s", strings.TrimSpace(string(b)))
 	}
 	var dc DeviceCode
 	if err := json.Unmarshal(b, &dc); err != nil {
 		return err
+	}
+	if dc.UserCode == "" || dc.DeviceCode == "" || dc.VerificationURI == "" || dc.ExpiresIn <= 0 {
+		return errors.New("Microsoft returned an incomplete sign-in code response; request a new code")
 	}
 	prompt(dc)
 
@@ -181,7 +194,7 @@ func (a *Authenticator) Login(ctx context.Context, prompt func(DeviceCode)) erro
 			return ctx.Err()
 		case <-time.After(interval):
 		}
-		tr, raw, err := a.post(ctx, a.endpoint("token"), url.Values{
+		tr, raw, err := a.post(ctx, endpoint(tenant, "token"), url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"client_id":   {a.ClientID},
 			"device_code": {dc.DeviceCode},
@@ -194,7 +207,12 @@ func (a *Authenticator) Login(ctx context.Context, prompt func(DeviceCode)) erro
 			if tr.AccessToken == "" {
 				return fmt.Errorf("unexpected token response: %s", raw)
 			}
-			return a.store(tr)
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return a.store(tr, tenant, false)
 		case "authorization_pending":
 			continue
 		case "slow_down":
@@ -207,25 +225,29 @@ func (a *Authenticator) Login(ctx context.Context, prompt func(DeviceCode)) erro
 	return errors.New("device code expired; please try again")
 }
 
-func (a *Authenticator) store(tr *tokenResp) error {
-	t := &Token{
+func (a *Authenticator) store(tr *tokenResp, tenant string, refresh bool) error {
+	t := &Token{ClientID: a.ClientID, Tenant: tenant,
 		AccessToken:  tr.AccessToken,
 		RefreshToken: tr.RefreshToken,
 		Expiry:       time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second),
 		Scope:        tr.Scope,
 	}
-	if t.RefreshToken == "" && a.tok != nil {
+	if t.RefreshToken == "" && refresh && a.tok != nil {
 		t.RefreshToken = a.tok.RefreshToken
 	}
-	if t.Scope == "" && a.tok != nil {
+	if t.Scope == "" && refresh && a.tok != nil {
 		t.Scope = a.tok.Scope
 	}
-	a.tok = t
 	b, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(a.path, b, 0o600)
+	if err := os.WriteFile(a.path, b, 0o600); err != nil {
+		return err
+	}
+	a.Tenant = tenant
+	a.tok = t
+	return nil
 }
 
 // AccessToken returns a valid access token, refreshing when needed.
@@ -261,7 +283,7 @@ func (a *Authenticator) refreshLocked(ctx context.Context) (string, error) {
 			scope += " offline_access"
 		}
 	}
-	tr, raw, err := a.post(ctx, a.endpoint("token"), url.Values{
+	tr, raw, err := a.post(ctx, endpoint(a.Tenant, "token"), url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {a.ClientID},
 		"refresh_token": {a.tok.RefreshToken},
@@ -278,7 +300,7 @@ func (a *Authenticator) refreshLocked(ctx context.Context) (string, error) {
 		}
 		return "", fmt.Errorf("token refresh failed: %s", raw)
 	}
-	if err := a.store(tr); err != nil {
+	if err := a.store(tr, a.Tenant, true); err != nil {
 		return "", err
 	}
 	return a.tok.AccessToken, nil

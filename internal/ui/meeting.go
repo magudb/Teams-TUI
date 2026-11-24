@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -251,12 +251,11 @@ func (m *Model) downloadRecording(e *model.Event) tea.Cmd {
 	}
 	r := st.a.Recordings[len(st.a.Recordings)-1]
 	name := safeFileName(e.Subject+" "+e.Start.Format("2006-01-02")) + ".mp4"
-	dest := m.downloadPath(name)
+	dir, c := m.cfg.DownloadDir, m.transferCtx
 	m.setToast("Downloading recording…", false)
 	return m.op(func(svc model.Service) opMsg {
-		c, cancel := ctx()
-		defer cancel()
-		if err := svc.FetchURL(c, r.ContentURL, dest); err != nil {
+		dest, err := saveDownload(dir, name, func(w io.Writer) error { return svc.FetchURL(c, r.ContentURL, w) })
+		if err != nil {
 			return opMsg{err: err}
 		}
 		return opMsg{toast: "Saved " + filepath.Base(dest), open: dest}
@@ -291,14 +290,13 @@ func (m *Model) openTranscript(title, vtt string) {
 	m.modal = &modal{kind: mText, title: title, text: text, width: min(100, m.w-8), raw: plain.String(), saveName: safeFileName(title) + ".txt"}
 }
 
-func (m *Model) saveTranscript(md *modal) {
+func (m *Model) saveTranscript(md *modal) tea.Cmd {
 	if md.raw == "" {
-		return
+		return nil
 	}
-	dest := m.downloadPath(md.saveName)
-	if err := os.WriteFile(dest, []byte(md.raw), 0o644); err != nil {
-		m.errToast(err)
-		return
-	}
-	m.setToast("Saved "+dest, false)
+	dir, name, raw := m.cfg.DownloadDir, md.saveName, md.raw
+	return m.op(func(_ model.Service) opMsg {
+		dest, err := saveDownload(dir, name, func(w io.Writer) error { _, err := io.WriteString(w, raw); return err })
+		return opMsg{toast: "Saved " + dest, err: err}
+	})
 }

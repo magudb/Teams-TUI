@@ -19,6 +19,8 @@ type myPresenceMsg struct {
 	err error
 }
 type chatsMsg struct {
+	next  model.Page
+	more  bool
 	chats []model.Chat
 	err   error
 }
@@ -32,12 +34,14 @@ type channelsMsg struct {
 	err      error
 }
 type messagesMsg struct {
-	ref   model.ConvRef
-	msgs  []model.Message
-	next  model.Page
-	older bool
-	poll  bool
-	err   error
+	target  *convView
+	request uint64
+	ref     model.ConvRef
+	msgs    []model.Message
+	next    model.Page
+	older   bool
+	poll    bool
+	err     error
 }
 type sentMsg struct {
 	ref     model.ConvRef
@@ -51,19 +55,21 @@ type presenceMsg struct {
 	err error
 }
 type eventsMsg struct {
-	day    time.Time
-	events []model.Event
-	err    error
+	request uint64
+	events  []model.Event
+	err     error
 }
 type filesMsg struct {
-	key   string
-	items []model.DriveItem
-	err   error
+	request uint64
+	key     string
+	items   []model.DriveItem
+	err     error
 }
 type searchMsg struct {
-	q    string
-	hits []model.SearchHit
-	err  error
+	request uint64
+	q       string
+	hits    []model.SearchHit
+	err     error
 }
 type peopleMsg struct {
 	q     string
@@ -80,9 +86,11 @@ type chatCreatedMsg struct {
 	err  error
 }
 type uploadMsg struct {
-	ref model.ConvRef
-	att model.Attachment
-	err error
+	editSession uint64
+	draft       uint64
+	ref         model.ConvRef
+	att         model.Attachment
+	err         error
 }
 
 // opMsg is a generic "operation finished" message.

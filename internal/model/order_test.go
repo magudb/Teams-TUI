@@ -19,7 +19,6 @@ func TestSortChannelsDanish(t *testing.T) {
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_COLLATE", "")
 	t.Setenv("LANG", "da_DK.UTF-8")
-	collatorOnce = sync.Once{}
 	chs := []Channel{{DisplayName: "Økonomi"}, {DisplayName: "arv"}, {DisplayName: "Ægtepagter"}, {DisplayName: "General"}, {DisplayName: "Zebra"}, {DisplayName: "Ånden"}, {DisplayName: "Bolig"}}
 	SortChannels(chs)
 	if got := names(chs); got != "General,arv,Bolig,Zebra,Ægtepagter,Økonomi,Ånden" {
@@ -58,4 +57,21 @@ func TestParseVTT(t *testing.T) {
 	if len(got) != 2 || got[0].Speaker != "Ann" || got[0].Text != "Hello there." || got[0].Start != "00:00:01" || got[1].Speaker != "Bob" {
 		t.Fatalf("got %+v", got)
 	}
+}
+
+func TestParallelChannelSort(t *testing.T) {
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 50 {
+				chs := []Channel{{DisplayName: "Support"}, {DisplayName: "Design"}, {DisplayName: "Engineering"}}
+				SortChannels(chs)
+				if names(chs) != "Design,Engineering,Support" {
+					t.Error(names(chs))
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
 }

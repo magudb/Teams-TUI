@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,15 +22,17 @@ func testClient(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	old := base
-	base = srv.URL
-	t.Cleanup(func() { base = old })
+	origin, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	tok, _ := json.Marshal(auth.Token{AccessToken: "tok", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
+	tok, _ := json.Marshal(auth.Token{ClientID: "cid", Tenant: "organizations", AccessToken: "tok", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
 	if err := os.WriteFile(filepath.Join(dir, "token.json"), tok, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c := New(auth.New("cid", "organizations", dir))
+	c.base = *origin
 	c.me = "me"
 	return c
 }
@@ -126,7 +129,7 @@ func TestChatsSkipHiddenAndPreview(t *testing.T) {
 		 "lastMessagePreview":{"id":"m","createdDateTime":"2026-01-02T00:00:00Z","body":{"contentType":"html","content":"<p>Hello&nbsp;<b>there</b></p>"},"from":{"user":{"id":"u","displayName":"U"}}}},
 		{"id":"b","chatType":"group","viewpoint":{"isHidden":true}}]}`)
 	})
-	chats, err := c.Chats(context.Background())
+	chats, _, err := c.Chats(context.Background(), "")
 	if err != nil || len(chats) != 1 {
 		t.Fatalf("%v %+v", err, chats)
 	}
@@ -144,5 +147,45 @@ func TestAPIErrorForbidden(t *testing.T) {
 	_, err := c.Teams(context.Background())
 	if !IsStatus(err, 403) || !strings.Contains(err.Error(), "admin consent") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAuthStaysOnConfiguredOrigin(t *testing.T) {
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("authorization crossed origins")
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer external.Close()
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Error("missing credentials on Graph request")
+		}
+		http.Redirect(w, r, external.URL, http.StatusFound)
+	})
+	for _, path := range []string{"/redirect", external.URL} {
+		err := c.do(context.Background(), http.MethodGet, path, nil, nil)
+		if !IsStatus(err, http.StatusUnauthorized) {
+			t.Fatalf("foreign 401 handling: %v", err)
+		}
+	}
+}
+
+func TestChatContinuation(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/next" {
+			io.WriteString(w, `{"value":[{"id":"b"}]}`)
+			return
+		}
+		io.WriteString(w, `{"value":[{"id":"a"}],"@odata.nextLink":"/next"}`)
+	})
+	first, next, err := c.Chats(context.Background(), "")
+	if err != nil || len(first) != 1 || next != "/next" {
+		t.Fatal(first, next, err)
+	}
+	last, next, err := c.Chats(context.Background(), next)
+	if err != nil || len(last) != 1 || last[0].ID != "b" || next != "" {
+		t.Fatal(last, next, err)
 	}
 }

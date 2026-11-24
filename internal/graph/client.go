@@ -9,27 +9,50 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/magudb/Teams-TUI/internal/auth"
 )
 
-var base = "https://graph.microsoft.com/v1.0"
-
 // Client talks to Microsoft Graph.
 type Client struct {
-	auth *auth.Authenticator
-	http *http.Client
-	me   string
+	auth       *auth.Authenticator
+	http       *http.Client
+	me         string
+	identityMu sync.RWMutex
+	base       url.URL
 }
 
 // New returns a Graph client.
 func New(a *auth.Authenticator) *Client {
-	return &Client{auth: a, http: &http.Client{Timeout: 60 * time.Second}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	c := &Client{auth: a, base: url.URL{Scheme: "https", Host: "graph.microsoft.com", Path: "/v1.0"}}
+	c.http = &http.Client{Transport: transport, CheckRedirect: c.checkRedirect}
+	return c
+}
+
+func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("too many redirects")
+	}
+	if !c.graphOrigin(req.URL) {
+		req.Header.Del("Authorization")
+	}
+	return nil
+}
+func (c *Client) graphOrigin(u *url.URL) bool {
+	return u.User == nil && u.Scheme == c.base.Scheme && strings.EqualFold(u.Host, c.base.Host)
+}
+
+func (c *Client) userID() string {
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.me
 }
 
 // APIError is a Graph error response.
@@ -82,8 +105,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 
 func (c *Client) raw(ctx context.Context, method, path string, body any, opts ...reqOpt) (*http.Response, error) {
 	u := path
-	if !strings.HasPrefix(u, "http") {
-		u = base + path
+	if strings.HasPrefix(u, "/") {
+		u = c.base.String() + path
 	}
 	var payload []byte
 	var rdr io.Reader
@@ -105,10 +128,6 @@ func (c *Client) raw(ctx context.Context, method, path string, body any, opts ..
 
 	refreshed := false
 	for attempt := 0; attempt < 4; attempt++ {
-		tok, err := c.auth.AccessToken(ctx)
-		if err != nil {
-			return nil, err
-		}
 		var r io.Reader = rdr
 		if payload != nil {
 			r = bytes.NewReader(payload)
@@ -117,7 +136,11 @@ func (c *Client) raw(ctx context.Context, method, path string, body any, opts ..
 		if err != nil {
 			return nil, err
 		}
-		if strings.HasPrefix(u, base) || strings.HasPrefix(u, "https://graph.microsoft.com") {
+		if c.graphOrigin(req.URL) {
+			tok, err := c.auth.AccessToken(ctx)
+			if err != nil {
+				return nil, err
+			}
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 		if isJSON {
@@ -131,7 +154,7 @@ func (c *Client) raw(ctx context.Context, method, path string, body any, opts ..
 			return nil, err
 		}
 		switch {
-		case resp.StatusCode == http.StatusUnauthorized && !refreshed:
+		case resp.StatusCode == http.StatusUnauthorized && !refreshed && rdr == nil && c.graphOrigin(resp.Request.URL) && c.graphOrigin(req.URL):
 			resp.Body.Close()
 			refreshed = true
 			if _, err := c.auth.ForceRefresh(ctx); err != nil {
@@ -194,28 +217,14 @@ func list[T any](ctx context.Context, c *Client, path string, maxPages int, opts
 }
 
 // FetchURL downloads an authenticated Graph URL (e.g. hosted content) to dest.
-func (c *Client) FetchURL(ctx context.Context, url, dest string) error {
+func (c *Client) FetchURL(ctx context.Context, url string, dest io.Writer) error {
 	resp, err := c.raw(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	return saveTo(resp.Body, dest)
-}
-
-func saveTo(r io.Reader, dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	_, err = io.Copy(dest, resp.Body)
+	return err
 }
 
 // TenantID returns the signed-in tenant id.

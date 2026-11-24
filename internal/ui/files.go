@@ -207,9 +207,9 @@ func (m *Model) uploadPrompt() {
 			folder = &f
 		}
 		loc := m.fileLoc
+		c := m.transferCtx
 		return m.op(func(svc model.Service) opMsg {
-			c, cancel := ctx()
-			defer cancel()
+
 			var err error
 			if strings.HasPrefix(loc, "loc:chan:") && folder == nil {
 				parts := strings.SplitN(strings.TrimPrefix(loc, "loc:chan:"), ":", 2)

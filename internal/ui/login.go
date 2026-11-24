@@ -100,12 +100,13 @@ func (l *loginModel) start() tea.Cmd {
 	gen := l.gen
 	l.dc = nil
 	l.err = ""
-	l.a.Tenant = l.tenants[l.sel]
+	l.toast = ""
+	tenant := l.tenants[l.sel]
 	ctx, cancel := context.WithCancel(context.Background())
 	l.cancel = cancel
 	a, send := l.a, l.send
 	return func() tea.Msg {
-		err := a.Login(ctx, func(dc auth.DeviceCode) { send(deviceCodeMsg{gen, dc}) })
+		err := a.LoginTenant(ctx, tenant, func(dc auth.DeviceCode) { send(deviceCodeMsg{gen, dc}) })
 		return loginDoneMsg{gen, err}
 	}
 }
@@ -132,6 +133,8 @@ func (l *loginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != l.gen {
 			return l, nil
 		}
+		l.dc = nil
+		l.toast = ""
 		if msg.err != nil {
 			if msg.err == context.Canceled {
 				return l, nil
@@ -148,8 +151,11 @@ func (l *loginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !found {
 				l.cfg.Tenants = append(l.cfg.Tenants, t)
 			}
-			l.cfg.Tenant = t
-			_ = config.Save(*l.cfg)
+		}
+		l.cfg.Tenant = t
+		if err := config.Save(*l.cfg); err != nil {
+			l.err = oneLineErr(err)
+			return l, nil
 		}
 		l.result = LoginOK
 		return l, tea.Quit
@@ -183,7 +189,7 @@ func (l *loginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			l.result = LoginDemo
 			return l, tea.Quit
 		case "c":
-			if l.dc != nil {
+			if l.codeActive() {
 				if err := copyToClipboard(l.dc.UserCode); err != nil {
 					l.toast = "copy failed: " + oneLineErr(err)
 				} else {
@@ -191,9 +197,12 @@ func (l *loginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "o":
-			if l.dc != nil {
-				_ = notify.Open(l.dc.VerificationURI)
-				l.toast = "opened in your browser"
+			if l.codeActive() {
+				if err := notify.Open(l.dc.VerificationURI); err != nil {
+					l.toast = "Could not open browser: " + oneLineErr(err)
+				} else {
+					l.toast = "opened in your browser"
+				}
 			}
 		case "r":
 			return l, l.start()
@@ -215,10 +224,16 @@ func (l *loginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return l, l.start()
 			}
 		case "enter":
-			return l, l.start()
+			if l.err != "" || (l.dc != nil && !l.codeActive()) {
+				return l, l.start()
+			}
 		}
 	}
 	return l, nil
+}
+
+func (l *loginModel) codeActive() bool {
+	return l.dc != nil && l.err == "" && time.Now().Before(l.started.Add(time.Duration(l.dc.ExpiresIn)*time.Second))
 }
 
 func (l *loginModel) View() string {
@@ -234,24 +249,23 @@ func (l *loginModel) View() string {
 	}
 	b = append(b, s.Inverse.Bold(true).Render(" teams-tui ")+" "+s.Muted.Render(version), "",
 		s.Bold.Render("Sign in with your Microsoft 365 account"), "")
-	uri := "microsoft.com/devicelogin"
-	code := "········"
-	if l.dc != nil {
-		uri = strings.TrimPrefix(strings.TrimPrefix(l.dc.VerificationURI, "https://"), "www.")
-		code = l.dc.UserCode
+	active := l.codeActive()
+	if active {
+		uri := l.dc.VerificationURI
+		b = append(b, s.Bold.Render("1")+" Open "+s.html.Link.Render(uri)+" "+s.Muted.Render("o opens it in your browser"),
+			s.Bold.Render("2")+" Enter this code "+s.Muted.Render("c copies it"), "")
+		codeStyle := s.Inverse.Bold(true)
+		padding := strings.Repeat(" ", ansi.StringWidth(l.dc.UserCode)+8)
+		b = append(b, "   "+codeStyle.Render(padding), "   "+codeStyle.Render("    "+l.dc.UserCode+"    "), "   "+codeStyle.Render(padding), "")
 	}
-	b = append(b, s.Bold.Render("1")+" Open "+s.html.Link.Render(uri)+" "+s.Muted.Render("o opens it in your browser"),
-		s.Bold.Render("2")+" Enter this code "+s.Muted.Render("c copies it"), "")
-	spaced := strings.Join(strings.Split(code, ""), " ")
-	boxW := ansi.StringWidth(spaced) + 8
-	codeSt := s.Inverse.Bold(true)
-	b = append(b, "   "+codeSt.Render(strings.Repeat(" ", boxW)), "   "+codeSt.Render(padRight("    "+spaced, boxW)), "   "+codeSt.Render(strings.Repeat(" ", boxW)), "")
 	switch {
 	case l.err != "":
 		for _, e := range strings.Split(ansi.Wrap(l.err, bw-2, " "), "\n") {
 			b = append(b, s.Danger.Render(e))
 		}
 		b = append(b, s.Muted.Render("r tries again"))
+	case l.dc != nil && !active:
+		b = append(b, s.Danger.Render("Code expired. Press r for a new code."))
 	case l.dc == nil:
 		b = append(b, s.Accent.Render(spin)+" Requesting a sign-in code…")
 	default:
@@ -263,7 +277,7 @@ func (l *loginModel) View() string {
 		}
 		b = append(b, s.Accent.Render(spin)+" Waiting for sign-in · code expires in "+itoa(max(0, mins))+":"+ss)
 	}
-	if l.toast != "" {
+	if l.toast != "" && active {
 		b = append(b, s.Muted.Render(l.toast))
 	}
 	b = append(b, "", s.Muted.Bold(true).Render("Tenant"))
@@ -299,6 +313,6 @@ func (l *loginModel) View() string {
 	}
 	body := paint(lines, l.w, s.bgPaper)
 	ink := lipgloss.NewStyle().Background(s.t.Ink).Foreground(s.t.OnInk)
-	status := ink.Render(spread(" c copy code · o open browser · ↑↓ tenant · d demo mode · q quit", "not signed in ", l.w))
+	status := ink.Render(spread(" c copy · o browser · r new code · ↑↓ tenant · d demo mode · q quit", "not signed in ", l.w))
 	return strings.Join(body, "\n") + "\n" + status
 }

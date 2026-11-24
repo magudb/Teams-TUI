@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -304,9 +305,9 @@ func (s *Service) Me(ctx context.Context) (model.User, error) { return s.me, nil
 func (s *Service) TenantID() string { return "demo-tenant" }
 
 // Chats lists chats.
-func (s *Service) Chats(ctx context.Context) ([]model.Chat, error) {
+func (s *Service) Chats(ctx context.Context, cursor model.Page) ([]model.Chat, model.Page, error) {
 	if err := delay(ctx); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -331,7 +332,7 @@ func (s *Service) Chats(ctx context.Context) ([]model.Chat, error) {
 		}
 		return a.After(b)
 	})
-	return out, nil
+	return out, "", nil
 }
 
 func (s *Service) findChat(id string) *model.Chat {
@@ -606,11 +607,9 @@ func (s *Service) Upload(ctx context.Context, ref model.ConvRef, localPath strin
 }
 
 // FetchURL writes a placeholder file.
-func (s *Service) FetchURL(ctx context.Context, url, dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, []byte("demo content from "+url+"\n"), 0o644)
+func (s *Service) FetchURL(ctx context.Context, url string, dest io.Writer) error {
+	_, err := fmt.Fprintln(dest, "demo content from "+url)
+	return err
 }
 
 // Presence returns presence.
@@ -771,7 +770,7 @@ func (s *Service) ChannelFiles(ctx context.Context, teamID, channelID string) ([
 }
 
 // Download writes a placeholder file.
-func (s *Service) Download(ctx context.Context, item model.DriveItem, dest string) error {
+func (s *Service) Download(ctx context.Context, item model.DriveItem, dest io.Writer) error {
 	return s.FetchURL(ctx, item.WebURL, dest)
 }
 

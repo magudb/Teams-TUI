@@ -28,18 +28,28 @@ func (c *Client) Me(ctx context.Context) (model.User, error) {
 	if err := c.do(ctx, http.MethodGet, "/me?$select=id,displayName,mail,userPrincipalName,jobTitle", nil, &u); err != nil {
 		return model.User{}, err
 	}
+	c.identityMu.Lock()
 	c.me = u.ID
+	c.identityMu.Unlock()
 	return u.toModel(), nil
 }
 
 // ---- chats -----------------------------------------------------------------
 
 // Chats lists the user's chats, most recent first.
-func (c *Client) Chats(ctx context.Context) ([]model.Chat, error) {
-	raw, err := list[gChat](ctx, c, "/me/chats?$expand=members,lastMessagePreview&$top=50&$orderby=lastMessagePreview/createdDateTime%20desc", 2)
-	if err != nil && len(raw) == 0 {
-		return nil, err
+func (c *Client) Chats(ctx context.Context, cursor model.Page) ([]model.Chat, model.Page, error) {
+	path := string(cursor)
+	if path == "" {
+		path = "/me/chats?$expand=members,lastMessagePreview&$top=50&$orderby=lastMessagePreview/createdDateTime%20desc"
 	}
+	var page struct {
+		Value []gChat    `json:"value"`
+		Next  model.Page `json:"@odata.nextLink"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+		return nil, "", err
+	}
+	raw := page.Value
 	out := make([]model.Chat, 0, len(raw))
 	for _, ch := range raw {
 		if ch.Viewpoint != nil && ch.Viewpoint.IsHidden {
@@ -48,7 +58,7 @@ func (c *Client) Chats(ctx context.Context) ([]model.Chat, error) {
 		out = append(out, ch.toModel())
 	}
 	model.SortChats(out)
-	return out, nil
+	return out, page.Next, nil
 }
 
 func memberBind(id string) map[string]any {
@@ -61,14 +71,14 @@ func memberBind(id string) map[string]any {
 
 // CreateChat creates (or returns the existing) 1:1 or group chat.
 func (c *Client) CreateChat(ctx context.Context, members []model.User, topic string) (model.Chat, error) {
-	if c.me == "" {
+	if c.userID() == "" {
 		if _, err := c.Me(ctx); err != nil {
 			return model.Chat{}, err
 		}
 	}
-	binds := []map[string]any{memberBind(c.me)}
+	binds := []map[string]any{memberBind(c.userID())}
 	for _, m := range members {
-		if m.ID != c.me {
+		if m.ID != c.userID() {
 			binds = append(binds, memberBind(m.ID))
 		}
 	}
@@ -112,7 +122,7 @@ func (c *Client) LeaveChat(ctx context.Context, chatID string) error {
 		return err
 	}
 	for _, m := range members {
-		if m.UserID == c.me {
+		if m.UserID == c.userID() {
 			return c.do(ctx, http.MethodDelete, "/chats/"+esc(chatID)+"/members/"+esc(m.ID), nil, nil)
 		}
 	}
@@ -120,7 +130,7 @@ func (c *Client) LeaveChat(ctx context.Context, chatID string) error {
 }
 
 func (c *Client) userRef() map[string]any {
-	return map[string]any{"user": map[string]any{"id": c.me, "tenantId": c.TenantID()}}
+	return map[string]any{"user": map[string]any{"id": c.userID(), "tenantId": c.TenantID()}}
 }
 
 // HideChat hides a chat for the signed-in user.
@@ -590,7 +600,7 @@ func (c *Client) meetingScopeHint(err error) error {
 // transcripts and recordings.
 func (c *Client) MeetingArtifacts(ctx context.Context, joinURL string) (model.MeetingArtifacts, error) {
 	var out model.MeetingArtifacts
-	if c.me == "" {
+	if c.userID() == "" {
 		if _, err := c.Me(ctx); err != nil {
 			return out, err
 		}
@@ -608,7 +618,7 @@ func (c *Client) MeetingArtifacts(ctx context.Context, joinURL string) (model.Me
 		return out, fmt.Errorf("meeting not found (only Teams meetings you organized or were invited to can be looked up)")
 	}
 	out.MeetingID = mt.Value[0].ID
-	p := "/users/" + esc(c.me) + "/onlineMeetings/" + esc(out.MeetingID)
+	p := "/users/" + esc(c.userID()) + "/onlineMeetings/" + esc(out.MeetingID)
 
 	type artifact struct {
 		ID                   string    `json:"id"`
@@ -621,7 +631,7 @@ func (c *Client) MeetingArtifacts(ctx context.Context, joinURL string) (model.Me
 	for _, t := range ts {
 		u := t.TranscriptContentURL
 		if u == "" {
-			u = base + p + "/transcripts/" + esc(t.ID) + "/content"
+			u = c.base.String() + p + "/transcripts/" + esc(t.ID) + "/content"
 		}
 		out.Transcripts = append(out.Transcripts, model.Transcript{ID: t.ID, MeetingID: out.MeetingID, Created: t.CreatedDateTime, ContentURL: u})
 	}
@@ -629,7 +639,7 @@ func (c *Client) MeetingArtifacts(ctx context.Context, joinURL string) (model.Me
 	for _, r := range rs {
 		u := r.RecordingContentURL
 		if u == "" {
-			u = base + p + "/recordings/" + esc(r.ID) + "/content"
+			u = c.base.String() + p + "/recordings/" + esc(r.ID) + "/content"
 		}
 		out.Recordings = append(out.Recordings, model.Recording{ID: r.ID, MeetingID: out.MeetingID, Created: r.CreatedDateTime, ContentURL: u})
 	}
@@ -772,10 +782,10 @@ func (c *Client) ChannelFiles(ctx context.Context, teamID, channelID string) ([]
 }
 
 // Download saves a drive item to dest.
-func (c *Client) Download(ctx context.Context, item model.DriveItem, dest string) error {
+func (c *Client) Download(ctx context.Context, item model.DriveItem, dest io.Writer) error {
 	p := "/me/drive/items/" + esc(item.ID) + "/content"
 	if item.DriveID != "" {
 		p = "/drives/" + esc(item.DriveID) + "/items/" + esc(item.ID) + "/content"
 	}
-	return c.FetchURL(ctx, base+p, dest)
+	return c.FetchURL(ctx, c.base.String()+p, dest)
 }

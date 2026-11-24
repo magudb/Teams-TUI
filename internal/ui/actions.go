@@ -1,11 +1,10 @@
 package ui
 
 import (
-	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -41,6 +40,7 @@ func (m *Model) openConvAt(ref model.ConvRef, msgID string) tea.Cmd {
 	}
 	m.conv = cv
 	m.thread = nil
+	m.touchConversation(cv)
 	cv.newSince = time.Time{}
 	if root.Kind == model.KindChat {
 		if c := m.chatByID(root.ChatID); c != nil && c.Unread(m.me.ID) {
@@ -56,17 +56,15 @@ func (m *Model) openConvAt(ref model.ConvRef, msgID string) tea.Cmd {
 	}
 	m.compose.bind(m.activeConv().ref.Key())
 	if root.Kind == model.KindChat {
-		cmds = append(cmds, m.markRead(root.ChatID))
+		m.awaitingRead[root.ChatID] = true
 	}
+	target := m.activeConv()
+	target.pendingSelect = msgID
 	if msgID != "" {
-		target := m.activeConv()
 		target.follow = false
-		for i := range target.msgs {
-			if target.msgs[i].ID == msgID {
-				target.selectMsg(i)
-			}
+		if i, ok := target.index[msgID]; ok {
+			target.selectMsg(i)
 		}
-		m.pendingSelect = msgID
 	}
 	if m.section == SecCalendar || m.section == SecFiles {
 		m.section = SecChat
@@ -89,7 +87,7 @@ func (m *Model) openConvAt(ref model.ConvRef, msgID string) tea.Cmd {
 	if m.w < 100 && m.focus == FocusSidebar {
 		m.setFocus(FocusMessages)
 	}
-	return tea.Batch(cmds...)
+	return tea.Batch(append(cmds, m.readVisibleChat())...)
 }
 
 func (m *Model) openThread(root model.ConvRef, threadID string) tea.Cmd {
@@ -106,6 +104,7 @@ func (m *Model) openThread(root model.ConvRef, threadID string) tea.Cmd {
 		cmd = m.loadMessages(ref, "", false, true)
 	}
 	m.thread = cv
+	m.touchConversation(cv)
 	m.compose.bind(ref.Key())
 	return cmd
 }
@@ -151,12 +150,12 @@ func (m *Model) switchSection(s Section) tea.Cmd {
 	case SecSearch:
 		m.setFocus(FocusSidebar)
 		m.searchInput.Focus()
-		return nil
+		return m.readVisibleChat()
 	}
 	if m.focus != FocusSidebar && (s == SecFiles || s == SecCalendar || s == SecSettings) {
 		m.setFocus(FocusSidebar)
 	}
-	return cmd
+	return tea.Batch(cmd, m.readVisibleChat())
 }
 
 func (m *Model) setFocus(f Focus) {
@@ -184,7 +183,6 @@ func (m *Model) setFocus(f Focus) {
 		if f != FocusMessages && ac.sel >= 0 {
 			ac.sel = -1
 			ac.follow = true
-			ac.dirty = true
 		}
 	}
 }
@@ -228,17 +226,22 @@ func (m *Model) doSearch() tea.Cmd {
 func (m *Model) openLink(u string) tea.Cmd {
 	if strings.HasPrefix(u, "https://graph.microsoft.com/") {
 		// hosted content (inline images) needs auth: download, then open locally
-		dest := filepath.Join(os.TempDir(), "teams-tui", fmt.Sprintf("hosted-%x", hash(u)))
-		svc := m.svc
+		svc, c := m.svc, m.transferCtx
 		m.busy++
 		return func() tea.Msg {
-			c, cancel := ctx()
-			defer cancel()
-			if err := svc.FetchURL(c, u, dest); err != nil {
+			dir, err := os.MkdirTemp("", "teams-hosted-*")
+			if err != nil {
 				return opMsg{err: err}
 			}
+			dest, err := saveDownload(dir, "content", func(w io.Writer) error { return svc.FetchURL(c, u, w) })
 			typed := dest + sniffExt(dest)
-			_ = os.Rename(dest, typed)
+			if err == nil {
+				err = os.Rename(dest, typed)
+			}
+			if err != nil {
+				_ = os.RemoveAll(dir)
+				return opMsg{err: err}
+			}
 			return opMsg{open: typed}
 		}
 	}
@@ -246,15 +249,6 @@ func (m *Model) openLink(u string) tea.Cmd {
 		m.errToast(err)
 	}
 	return nil
-}
-
-func hash(s string) uint32 {
-	var h uint32 = 2166136261
-	for i := 0; i < len(s); i++ {
-		h ^= uint32(s[i])
-		h *= 16777619
-	}
-	return h
 }
 
 func sniffExt(path string) string {
@@ -342,7 +336,7 @@ func (m *Model) msgAction(action string) tea.Cmd {
 		if cv.failed[msg.ID] && (action == "delete" || action == "retry") {
 			for i := range cv.msgs {
 				if cv.msgs[i].ID == msg.ID {
-					cv.msgs = append(cv.msgs[:i], cv.msgs[i+1:]...)
+					cv.removeMessage(i)
 					cv.sel = -1
 					cv.dirty = true
 					break
@@ -577,12 +571,10 @@ func (m *Model) fileAction(action string, f *model.DriveItem) tea.Cmd {
 			return nil
 		}
 		item := *f
-		dest := m.downloadPath(f.Name)
+		dir, c := m.cfg.DownloadDir, m.transferCtx
 		m.setToast("Downloading "+f.Name+"…", false)
 		return m.op(func(svc model.Service) opMsg {
-			c, cancel := ctx()
-			defer cancel()
-			err := svc.Download(c, item, dest)
+			dest, err := saveDownload(dir, item.Name, func(w io.Writer) error { return svc.Download(c, item, w) })
 			return opMsg{err: err, toast: "Saved to " + dest}
 		})
 	}

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -66,8 +67,20 @@ func (m *Model) paneFills(side bool) (pane, block, chip lipgloss.Color) {
 // renderConv lays out all messages of cv for the given width.
 func (m *Model) renderConv(cv *convView, width int, side bool) {
 	if !cv.dirty && cv.width == width && cv.side == side {
+		for _, i := range cv.changedBlocks {
+			m.redrawMessage(cv, i)
+		}
+		cv.changedBlocks = cv.changedBlocks[:0]
+		if cv.renderedSel != cv.sel {
+			m.redrawMessage(cv, cv.renderedSel)
+			m.redrawMessage(cv, cv.sel)
+			cv.renderedSel = cv.sel
+		}
 		return
 	}
+	cv.renderedSel = cv.sel
+	cv.changedBlocks = cv.changedBlocks[:0]
+	cv.grouped = make([]bool, len(cv.msgs))
 	cv.dirty = false
 	cv.width = width
 	cv.side = side
@@ -137,17 +150,8 @@ func (m *Model) renderConv(cv *convView, width int, side bool) {
 		}
 
 		cv.msgStart[i] = len(cv.lines)
-		var lines []string
-		switch {
-		case msg.MessageType != "" && msg.MessageType != "message":
-			lines = m.systemLines(msg, width)
-		case kind == "channel":
-			lines = m.postBlock(cv, i, width, side)
-		case isRoot:
-			lines = m.threadRoot(cv, i, width)
-		default:
-			lines = m.chatMessage(cv, i, width, grouped, kind == "chat", side)
-		}
+		cv.grouped[i] = grouped
+		lines := m.conversationMessage(cv, i)
 		for _, l := range lines {
 			add(l, i)
 		}
@@ -176,6 +180,53 @@ func (m *Model) renderConv(cv *convView, width int, side bool) {
 		} else {
 			add("  "+s.Muted.Render("No messages yet. Say hello."), -1)
 		}
+	}
+}
+
+// redrawMessage replaces just the message block. Day headers, new-message
+// dividers, and the reply-count chip lie outside its owned range.
+func (m *Model) redrawMessage(cv *convView, i int) {
+	if i < 0 || i >= len(cv.msgStart) {
+		return
+	}
+	start := cv.msgStart[i]
+	end := start
+	for end < len(cv.owner) && cv.owner[end] == i {
+		end++
+	}
+	id := cv.msgs[i].ID
+	delete(cv.links, id)
+	for key, action := range cv.cardActs {
+		if action.msgID == id {
+			delete(cv.cardActs, key)
+		}
+	}
+	lines := m.conversationMessage(cv, i)
+	cv.lines = slices.Replace(cv.lines, start, end, lines...)
+	owners := make([]int, len(lines))
+	for j := range owners {
+		owners[j] = i
+	}
+	cv.owner = slices.Replace(cv.owner, start, end, owners...)
+	delta := len(lines) - (end - start)
+	if delta != 0 {
+		for j := i + 1; j < len(cv.msgStart); j++ {
+			cv.msgStart[j] += delta
+		}
+	}
+}
+
+func (m *Model) conversationMessage(cv *convView, i int) []string {
+	msg := &cv.msgs[i]
+	switch {
+	case msg.MessageType != "" && msg.MessageType != "message":
+		return m.systemLines(msg, cv.width)
+	case cv.ref.Kind == model.KindChannel && cv.ref.ThreadID == "":
+		return m.postBlock(cv, i, cv.width, cv.side)
+	case cv.ref.ThreadID != "" && msg.ID == cv.ref.ThreadID:
+		return m.threadRoot(cv, i, cv.width)
+	default:
+		return m.chatMessage(cv, i, cv.width, cv.grouped[i], cv.ref.Kind == model.KindChat && cv.ref.ThreadID == "", cv.side)
 	}
 }
 

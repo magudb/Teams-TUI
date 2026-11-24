@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"strings"
 	"time"
@@ -52,11 +53,13 @@ type activityItem struct {
 
 // Model is the root bubbletea model.
 type Model struct {
-	svc  model.Service
-	cfg  config.Config
-	st   *state.State
-	s    styles
-	demo bool
+	transferCtx     context.Context
+	cancelTransfers context.CancelFunc
+	svc             model.Service
+	cfg             config.Config
+	st              *state.State
+	s               styles
+	demo            bool
 
 	w, h       int
 	ready      bool
@@ -71,34 +74,45 @@ type Model struct {
 	showSidebar bool
 
 	// data
-	chats       []model.Chat
-	chatsLoaded bool
-	lastPreview map[string]string // chat id -> last message id (for notifications)
-	teams       []model.Team
-	channels    map[string][]model.Channel
-	activity    []activityItem
-	events      []model.Event
-	calDay      time.Time
-	selEvent    string
-	files       []model.DriveItem
-	fileStack   []model.DriveItem
-	searchInput textinput.Model
-	searchQ     string
-	hits        []model.SearchHit
-	chatFilter  textinput.Model
-	filtering   bool
+	chats         []model.Chat
+	chatsLoaded   bool
+	chatPages     int
+	nextChats     model.Page
+	eventsRequest uint64
+	filesRequest  uint64
+	tabRequest    uint64
+	searchRequest uint64
+
+	spinning                   bool
+	awaitingRead, readInFlight map[string]bool
+	filesLoading               bool
+	lastPreview                map[string]string // chat id -> last message id (for notifications)
+	teams                      []model.Team
+	channels                   map[string][]model.Channel
+	activity                   []activityItem
+	events                     []model.Event
+	calDay                     time.Time
+	selEvent                   string
+	files                      []model.DriveItem
+	fileStack                  []model.DriveItem
+	searchInput                textinput.Model
+	searchQ                    string
+	hits                       []model.SearchHit
+	chatFilter                 textinput.Model
+	filtering                  bool
 
 	// sidebar selection per section (by item key) and scroll offsets
 	sideSel    map[Section]string
 	sideScroll map[Section]int
 
 	// conversations
-	conv     *convView
-	thread   *convView
-	convs    map[string]*convView // cache by ref key
-	members  map[string][]model.User
-	mainTab  int // 0 = messages, 1 = files
-	tabFiles []model.DriveItem
+	conversationUse uint64
+	conv            *convView
+	thread          *convView
+	convs           map[string]*convView // cache by ref key
+	members         map[string][]model.User
+	mainTab         int // 0 = messages, 1 = files
+	tabFiles        []model.DriveItem
 
 	compose composer
 
@@ -112,7 +126,6 @@ type Model struct {
 
 	geo           geometry
 	pendingCmd    tea.Cmd
-	pendingSelect string
 	dragKey       string           // sidebar item being pressed/dragged
 	sideTouched   map[Section]bool // user has chosen a selection (otherwise it follows the first item)
 	jumpMention   string           // message opened from a mention in Activity (gets a MENTION badge)
@@ -142,7 +155,7 @@ type Model struct {
 	chanPollDisabled bool
 
 	lastPollMsgs, lastPollChats, lastPollPresence, lastPollEvents time.Time
-	pollingMsgs, pollingChats                                     bool
+	pollingChats                                                  bool
 }
 
 // New creates the root model.
@@ -156,33 +169,39 @@ func New(svc model.Service, cfg config.Config, st *state.State, demo bool) *Mode
 	cf := textinput.New()
 	cf.Placeholder = "Filter chats"
 	cf.Prompt = "› "
+	transferCtx, cancelTransfers := context.WithCancel(context.Background())
 	m := &Model{
 		svc: svc, cfg: cfg, st: st, demo: demo,
-		s:           newStyles(cfg.Theme != "dark", cfg.Icons),
-		presence:    map[string]model.Presence{},
-		users:       map[string]model.User{},
-		channels:    map[string][]model.Channel{},
-		convs:       map[string]*convView{},
-		members:     map[string][]model.User{},
-		lastPreview: map[string]string{},
-		sideSel:     map[Section]string{},
-		sideScroll:  map[Section]int{},
-		emailUsers:  map[string]model.User{},
-		resolving:   map[string]bool{},
-		artifacts:   map[string]*artifactState{},
-		chatTitles:  map[string]string{},
-		chanAct:     map[string]chanActivity{},
-		sideTouched: map[Section]bool{},
-		fileCounts:  map[string]int{},
-		fileLoc:     "loc:recent",
-		showPeople:  true,
-		section:     SecChat,
-		showSidebar: true,
-		focused:     true,
-		calDay:      today(),
-		spinner:     sp,
-		searchInput: si,
-		chatFilter:  cf,
+		transferCtx:     transferCtx,
+		cancelTransfers: cancelTransfers,
+		chatPages:       2,
+		awaitingRead:    map[string]bool{},
+		readInFlight:    map[string]bool{},
+		s:               newStyles(cfg.Theme != "dark", cfg.Icons),
+		presence:        map[string]model.Presence{},
+		users:           map[string]model.User{},
+		channels:        map[string][]model.Channel{},
+		convs:           map[string]*convView{},
+		members:         map[string][]model.User{},
+		lastPreview:     map[string]string{},
+		sideSel:         map[Section]string{},
+		sideScroll:      map[Section]int{},
+		emailUsers:      map[string]model.User{},
+		resolving:       map[string]bool{},
+		artifacts:       map[string]*artifactState{},
+		chatTitles:      map[string]string{},
+		chanAct:         map[string]chanActivity{},
+		sideTouched:     map[Section]bool{},
+		fileCounts:      map[string]int{},
+		fileLoc:         "loc:recent",
+		showPeople:      true,
+		section:         SecChat,
+		showSidebar:     true,
+		focused:         true,
+		calDay:          today(),
+		spinner:         sp,
+		searchInput:     si,
+		chatFilter:      cf,
 	}
 	if st != nil {
 		for i, n := range sectionNames {
@@ -204,7 +223,7 @@ func today() time.Time {
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadMe(), m.loadMyPresence(), m.loadChats(), m.loadTeams(),
-		m.loadEvents(m.calDay), tick(), m.spinner.Tick, tea.SetWindowTitle("Teams"),
+		m.loadEvents(m.calDay), tick(), tea.SetWindowTitle("Teams"),
 	)
 }
 
@@ -275,41 +294,72 @@ func (m *Model) saveState() {
 
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+	cmd := m.update(msg)
+	var start tea.Cmd
+	if !m.spinning && m.spinnerVisible() {
+		m.spinning = true
+		start = m.spinner.Tick
+	}
+	return m, tea.Batch(cmd, start)
+}
+
+func (m *Model) spinnerVisible() bool {
+	if !m.ready {
+		return false
+	}
+	if m.busy > 0 {
+		return true
+	}
+	switch m.section {
+	case SecChat:
+		return m.showSidebar && !m.chatsLoaded && m.pollingChats
+	case SecFiles:
+		return m.filesLoading && m.conv == nil
+	case SecCalendar:
+		if e := m.selectedEvent(); e != nil {
+			st := m.artifacts[e.ID]
+			return st != nil && st.loading
+		}
+	}
+	return false
+}
+
+func (m *Model) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.ready = true
 		m.invalidateRender()
 		m.compose.resize()
-		return m, nil
+		return nil
 
 	case tea.FocusMsg:
 		m.focused = true
-		return m, nil
+		return m.readVisibleChat()
 	case tea.BlurMsg:
 		m.focused = false
-		return m, nil
+		return nil
 
 	case spinner.TickMsg:
+		if !m.spinnerVisible() {
+			m.spinning = false
+			return nil
+		}
 		var c tea.Cmd
 		m.spinner, c = m.spinner.Update(msg)
-		return m, c
+		return c
 
 	case tickMsg:
-		return m, tea.Batch(m.onTick(time.Time(msg)), tick())
+		return tea.Batch(m.onTick(time.Time(msg)), tick())
 
 	case tea.KeyMsg:
-		return m, m.handleKey(msg)
+		return m.handleKey(msg)
 
 	case tea.MouseMsg:
-		return m, m.handleMouse(msg)
+		return m.handleMouse(msg)
 	}
 
-	if c := m.handleData(msg); c != nil {
-		cmds = append(cmds, c)
-	}
-	return m, tea.Batch(cmds...)
+	return m.handleData(msg)
 }
 
 func (m *Model) onTick(now time.Time) tea.Cmd {
@@ -319,17 +369,17 @@ func (m *Model) onTick(now time.Time) tea.Cmd {
 		m.toast = ""
 		m.toastUntil = time.Time{}
 	}
-	if ac := m.activeConv(); ac != nil && !m.pollingMsgs && now.Sub(m.lastPollMsgs) >= time.Duration(m.cfg.PollMessagesSeconds)*time.Second {
+	if ac := m.activeConv(); ac != nil && now.Sub(m.lastPollMsgs) >= time.Duration(m.cfg.PollMessagesSeconds)*time.Second {
 		m.lastPollMsgs = now
-		m.pollingMsgs = true
-		cmds = append(cmds, m.loadMessages(ac.ref, "", false, true))
-		if m.thread != nil && m.conv != nil {
+		if !ac.fetchingHead {
+			cmds = append(cmds, m.loadMessages(ac.ref, "", false, true))
+		}
+		if m.thread != nil && m.conv != nil && !m.conv.fetchingHead {
 			cmds = append(cmds, m.loadMessages(m.conv.ref, "", false, true))
 		}
 	}
 	if !m.pollingChats && now.Sub(m.lastPollChats) >= time.Duration(m.cfg.PollChatsSeconds)*time.Second {
 		m.lastPollChats = now
-		m.pollingChats = true
 		cmds = append(cmds, m.loadChats())
 	}
 	if now.Sub(m.lastPollPresence) >= time.Duration(m.cfg.PollPresenceSeconds)*time.Second {
@@ -351,6 +401,7 @@ func (m *Model) onTick(now time.Time) tea.Cmd {
 func Run(m *Model) error {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
 	_, err := p.Run()
+	m.cancelTransfers()
 	m.compose.saveDraft()
 	m.saveState()
 	return err

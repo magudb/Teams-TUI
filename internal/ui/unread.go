@@ -163,7 +163,7 @@ func (m *Model) channelUnread(ch model.Channel) bool {
 	if !ok {
 		return false
 	}
-	if ac := m.conv; ac != nil && ac.ref.Kind == model.KindChannel && ac.ref.ChannelID == ch.ID {
+	if ac := m.conv; m.viewingMessages(ac) && ac.ref.Kind == model.KindChannel && ac.ref.ChannelID == ch.ID {
 		return false
 	}
 	return act.latest.After(m.st.Seen[key])

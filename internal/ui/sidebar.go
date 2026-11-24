@@ -15,9 +15,9 @@ type sideItem struct {
 	lines      []string
 	selectable bool
 	open       func(m *Model) tea.Cmd // enter / click
-	// selLines renders the item when selected (accent fill); nil = derive
-	// from lines by stripping styles.
-	selLines func() []string
+	// Dynamic rows declare their height so off-screen text need not be formatted.
+	height int
+	render func(selected bool) []string
 }
 
 // sortedChats returns pinned chats (in the user's pinned order) and the
@@ -110,52 +110,51 @@ func (m *Model) layoutSidebar(w, h int) sideLayout {
 			}
 		}
 	}
-	var all []string
-	var owner []int
-	selStart, selEnd := 0, 0
-	for i, it := range items {
-		if i == sel {
-			selStart = len(all)
-		}
-		lines := it.lines
-		if i == sel {
-			if it.selLines != nil {
-				lines = it.selLines()
-			} else {
-				lines = make([]string, len(it.lines))
-				for k, l := range it.lines {
-					lines[k] = ansi.Strip(l)
-				}
-			}
-			// accent fill when the sidebar has focus, block fill otherwise
-			for k, l := range lines {
-				if it.selLines == nil {
-					l = m.s.Sel.Render(ansi.Strip(l))
-				}
-				lines[k] = withBg(l, styleOn(m.s.Sel), w)
-			}
-		}
-		for _, l := range lines {
-			all = append(all, l)
-			owner = append(owner, i)
-		}
-		if i == sel {
-			selEnd = len(all) - 1
-		}
-	}
 	scroll := m.sideScroll[m.section]
-	if sel >= 0 {
-		if selStart < scroll {
-			scroll = selStart
+	total := 0
+	for i, it := range items {
+		height := it.lineCount()
+		if i == sel {
+			scroll = max(min(scroll, total), total+height-h)
 		}
-		if selEnd >= scroll+h {
-			scroll = selEnd - h + 1
-		}
+		total += height
 	}
-	scroll = max(0, min(scroll, len(all)-h))
+	scroll = max(0, min(scroll, total-h))
 	m.sideScroll[m.section] = scroll
-	end := min(len(all), scroll+h)
-	return sideLayout{lines: all[scroll:end], owner: owner[scroll:end], items: items}
+	layout := sideLayout{items: items}
+	row := 0
+	for i, it := range items {
+		end := row + it.lineCount()
+		if row >= scroll+h {
+			break
+		}
+		if end > scroll {
+			lines := it.lines
+			if it.render != nil {
+				lines = it.render(i == sel)
+			}
+			for j := max(0, scroll-row); j < min(len(lines), scroll+h-row); j++ {
+				line := lines[j]
+				if i == sel {
+					if it.render == nil {
+						line = m.s.Sel.Render(ansi.Strip(line))
+					}
+					line = withBg(line, styleOn(m.s.Sel), w)
+				}
+				layout.lines = append(layout.lines, line)
+				layout.owner = append(layout.owner, i)
+			}
+		}
+		row = end
+	}
+	return layout
+}
+
+func (it sideItem) lineCount() int {
+	if it.render != nil {
+		return it.height
+	}
+	return len(it.lines)
 }
 
 // ensureSel makes sure the current section has a valid selection.

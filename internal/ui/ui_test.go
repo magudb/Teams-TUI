@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/magudb/Teams-TUI/internal/config"
@@ -14,37 +15,52 @@ import (
 	"github.com/magudb/Teams-TUI/internal/state"
 )
 
-// drain runs cmd (and anything it batches) with a timeout per command,
-// feeding results back into the model. Slow commands (ticks) are dropped.
-func drain(t *testing.T, m *Model, cmd tea.Cmd, depth int) {
+// drain runs commands like the event loop: batches execute concurrently and
+// each result is applied on the test goroutine. Periodic ticks stop here.
+func drain(t *testing.T, m *Model, cmd tea.Cmd) {
 	t.Helper()
-	if cmd == nil || depth > 6 {
+	if cmd == nil {
 		return
 	}
-	ch := make(chan tea.Msg, 1)
-	go func() { ch <- cmd() }()
-	var msg tea.Msg
-	select {
-	case msg = <-ch:
-	case <-time.After(400 * time.Millisecond):
-		return
-	}
-	switch msg := msg.(type) {
-	case nil:
-	case tea.BatchMsg:
-		for _, c := range msg {
-			drain(t, m, c, depth+1)
-		}
-	case tea.QuitMsg:
-	default:
-		if _, ok := msg.(tickMsg); ok {
+	results := make(chan tea.Msg)
+	done := make(chan struct{})
+	defer close(done)
+	pending := 0
+	start := func(c tea.Cmd) {
+		if c == nil {
 			return
 		}
-		_, next := m.Update(msg)
-		drain(t, m, next, depth+1)
+		pending++
+		go func() {
+			msg := c()
+			select {
+			case results <- msg:
+			case <-done:
+			}
+		}()
+	}
+	start(cmd)
+	timeout := time.NewTimer(8 * time.Second)
+	defer timeout.Stop()
+	for pending > 0 {
+		select {
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %d commands", pending)
+		case msg := <-results:
+			pending--
+			switch msg := msg.(type) {
+			case nil, tickMsg, spinner.TickMsg, tea.QuitMsg:
+			case tea.BatchMsg:
+				for _, c := range msg {
+					start(c)
+				}
+			default:
+				_, next := m.Update(msg)
+				start(next)
+			}
+		}
 	}
 }
-
 func newTestModel(t *testing.T, w, h int) *Model {
 	t.Helper()
 	return newTestModelCfg(t, w, h, func(*config.Config) {})
@@ -65,7 +81,7 @@ func newTestModelSvc(t *testing.T, w, h int, mod func(*config.Config)) (*Model, 
 	mod(&cfg)
 	m := New(svc, cfg, state.Load(""), true)
 	m.Update(tea.WindowSizeMsg{Width: w, Height: h})
-	drain(t, m, m.Init(), 0)
+	drain(t, m, m.Init())
 	return m, svc
 }
 
@@ -95,13 +111,13 @@ func press(t *testing.T, m *Model, k string) {
 		}
 	}
 	_, cmd := m.Update(msg)
-	drain(t, m, cmd, 0)
+	drain(t, m, cmd)
 }
 
 func typeText(t *testing.T, m *Model, s string) {
 	for _, r := range s {
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		drain(t, m, cmd, 0)
+		drain(t, m, cmd)
 	}
 }
 
@@ -259,9 +275,9 @@ func TestCalendarAndSearch(t *testing.T) {
 func click(t *testing.T, m *Model, x, y int) {
 	t.Helper()
 	_, cmd := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	drain(t, m, cmd, 0)
+	drain(t, m, cmd)
 	_, cmd = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
-	drain(t, m, cmd, 0)
+	drain(t, m, cmd)
 }
 
 func TestMouse(t *testing.T) {
@@ -460,7 +476,7 @@ func pollAllChannels(t *testing.T, m *Model) {
 		n += len(chs)
 	}
 	for i := 0; i < n; i++ {
-		drain(t, m, m.pollNextChannel(), 0)
+		drain(t, m, m.pollNextChannel())
 	}
 }
 
@@ -515,7 +531,7 @@ func lineWith(s, needle string) string {
 
 func TestConversationLayout(t *testing.T) {
 	m := newTestModelCfg(t, 140, 45, classic)
-	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: "c1"}), 0)
+	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: "c1"}))
 	s := screen(m)
 	dump(t, "60-bubbles", s)
 	mine, theirs := lineWith(s, "Sure, 10:00 works"), lineWith(s, "Hi Alex! Do you have")
@@ -529,7 +545,7 @@ func TestConversationLayout(t *testing.T) {
 		t.Fatalf("expected day chip and unread divider:\n%s", s)
 	}
 
-	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch1"}), 0)
+	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch1"}))
 	s = screen(m)
 	dump(t, "61-cards", s)
 	for _, want := range []string{"3 replies · ", "open ›", "Reply"} {
@@ -569,7 +585,7 @@ func clickText(t *testing.T, m *Model, text string) {
 
 func TestAdaptiveCardsInChat(t *testing.T) {
 	m := newTestModelCfg(t, 150, 60, classic)
-	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: "c2"}), 0)
+	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: "c2"}))
 	s := screen(m)
 	dump(t, "70-card-chat", s)
 	for _, want := range []string{"Approvals", "APPROVAL REQUESTED: CONTRACT RENEWAL", "Contoso A/S", "Approve", "Delegate ▾", "go to the bot. Press T"} {
@@ -601,7 +617,7 @@ func TestAdaptiveCardsInChat(t *testing.T) {
 	press(t, m, "esc")
 
 	// connector card in a channel post
-	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch2"}), 0)
+	drain(t, m, m.openConv(model.ConvRef{Kind: model.KindChannel, TeamID: "t1", ChannelID: "ch2"}))
 	s = screen(m)
 	dump(t, "71-card-channel", s)
 	if !strings.Contains(s, "PULL REQUEST OPENED") || !strings.Contains(s, "fix/billing-retry") {

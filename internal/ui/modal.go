@@ -389,7 +389,7 @@ func (m *Model) modalKey(msg tea.KeyMsg) tea.Cmd {
 				m.copy(md.raw, "transcript")
 			}
 		case "s":
-			m.saveTranscript(md)
+			return m.saveTranscript(md)
 		}
 		return nil
 	case mPrompt:

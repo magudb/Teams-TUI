@@ -78,29 +78,30 @@ func (m *Model) chatIcon(c model.Chat) string {
 }
 
 func (m *Model) chatItem(c model.Chat, w int, key string) sideItem {
-	s := m.s
-	title := c.Title(m.me.ID)
-	unread := c.Unread(m.me.ID) && !m.st.Muted["chat:"+c.ID]
-	preview := ""
-	ts := ""
-	if lm := c.LastMessage; lm != nil {
-		ts = relTime(lm.Created, m.cfg.TimeFormat)
-		who := ""
-		if lm.From.ID == m.me.ID {
-			who = "You: "
-		} else if c.ChatType != "oneOnOne" && lm.From.DisplayName != "" {
-			who = strings.Fields(lm.From.DisplayName)[0] + ": "
-		}
-		preview = who + plainOneLine(lm.Text)
-		if lm.Deleted {
-			preview = "This message has been deleted."
-		}
-	}
-	if m.st.Muted["chat:"+c.ID] {
-		title += " (muted)"
-	}
-	icon := m.chatIcon(c)
 	build := func(sel bool) []string {
+		s := m.s
+		title := c.Title(m.me.ID)
+		unread := c.Unread(m.me.ID) && !m.st.Muted["chat:"+c.ID]
+		preview := ""
+		ts := ""
+		if lm := c.LastMessage; lm != nil {
+			ts = relTime(lm.Created, m.cfg.TimeFormat)
+			who := ""
+			if lm.From.ID == m.me.ID {
+				who = "You: "
+			} else if c.ChatType != "oneOnOne" && lm.From.DisplayName != "" {
+				who = strings.Fields(lm.From.DisplayName)[0] + ": "
+			}
+			preview = who + plainOneLine(lm.Text)
+			if lm.Deleted {
+				preview = "This message has been deleted."
+			}
+		}
+		if m.st.Muted["chat:"+c.ID] {
+			title += " (muted)"
+		}
+		icon := m.chatIcon(c)
+
 		nameSt, prevSt, timeSt := s.Text, s.Muted, s.Muted
 		if unread {
 			nameSt, prevSt = s.Bold, s.Text
@@ -122,7 +123,7 @@ func (m *Model) chatItem(c model.Chat, w int, key string) sideItem {
 		return []string{l1, l2}
 	}
 	id := c.ID
-	return sideItem{key: key, lines: build(false), selLines: func() []string { return build(true) }, selectable: true,
+	return sideItem{key: key, height: 2, render: build, selectable: true,
 		open: func(m *Model) tea.Cmd {
 			m.sideSel[m.section] = strings.TrimPrefix(key, "u:")
 			return m.openConv(model.ConvRef{Kind: model.KindChat, ChatID: id})
@@ -151,6 +152,9 @@ func (m *Model) chatListItems(w int, first bool) []sideItem {
 		}
 	}
 	add("recent", "Recent", recent)
+	if m.nextChats != "" {
+		items = append(items, sideItem{key: "more:chats", selectable: true, lines: []string{"  Load older chats"}, open: func(m *Model) tea.Cmd { return m.chatPagesCmd(true) }})
+	}
 	if !m.chatsLoaded {
 		items = append(items, sideItem{lines: []string{" " + m.s.Muted.Render(m.spinner.View()+" Loading chats…")}})
 	}
@@ -284,8 +288,12 @@ func (m *Model) channelItem(ch model.Channel, w int, key string, dim, withPrevie
 		}
 		return lines
 	}
+	height := 1
+	if withPreview {
+		height++
+	}
 	teamID, chID := ch.TeamID, ch.ID
-	return sideItem{key: key, selectable: true, lines: build(false), selLines: func() []string { return build(true) },
+	return sideItem{key: key, selectable: true, height: height, render: build,
 		open: func(m *Model) tea.Cmd {
 			m.sideSel[m.section] = strings.TrimPrefix(key, "u:")
 			if !strings.HasPrefix(key, "fav:") {
@@ -551,7 +559,7 @@ func (m *Model) activityItem(i int, a activityItem, w int) sideItem {
 		}
 	}
 	idx := i
-	return sideItem{key: "act:" + itoa(i) + a.msgID, selectable: true, lines: build(false), selLines: func() []string { return build(true) },
+	return sideItem{key: "act:" + itoa(i) + a.msgID, selectable: true, height: 2, render: build,
 		open: func(m *Model) tea.Cmd {
 			m.activity[idx].read = true
 			if a.kind == "meeting" {
@@ -618,7 +626,7 @@ func (m *Model) eventItem(e model.Event, w int) sideItem {
 		}
 	}
 	id := e.ID
-	return sideItem{key: "ev:" + e.ID, selectable: true, lines: build(false), selLines: func() []string { return build(true) },
+	return sideItem{key: "ev:" + e.ID, selectable: true, height: 2, render: build,
 		open: func(m *Model) tea.Cmd { m.selEvent = id; return nil }}
 }
 
@@ -642,7 +650,7 @@ func (m *Model) hitItem(h model.SearchHit, w int) sideItem {
 			" " + subSt.Render(icon+" "+trunc(where, w-5)),
 		}
 	}
-	return sideItem{key: "hit:" + h.MsgID, selectable: true, lines: build(false), selLines: func() []string { return build(true) },
+	return sideItem{key: "hit:" + h.MsgID, selectable: true, height: 3, render: build,
 		open: func(m *Model) tea.Cmd { return m.openConvAt(h.Ref, h.MsgID) }}
 }
 

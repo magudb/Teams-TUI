@@ -2,7 +2,7 @@ package ui
 
 import (
 	"os"
-	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,12 +36,38 @@ func (m *Model) loadMyPresence() tea.Cmd {
 }
 
 func (m *Model) loadChats() tea.Cmd {
+	return m.chatPagesCmd(false)
+}
+
+func (m *Model) chatPagesCmd(more bool) tea.Cmd {
+	if m.pollingChats || (more && m.nextChats == "") {
+		return nil
+	}
+	m.pollingChats = true
+	pages := m.chatPages
+	var cursor model.Page
+	if more {
+		cursor = m.nextChats
+		pages = 1
+	}
 	svc := m.svc
 	return func() tea.Msg {
 		c, cancel := ctx()
 		defer cancel()
-		ch, err := svc.Chats(c)
-		return chatsMsg{ch, err}
+		result := chatsMsg{more: more}
+		for range pages {
+			chats, next, err := svc.Chats(c, cursor)
+			if err != nil {
+				return chatsMsg{err: err}
+			}
+			result.chats = append(result.chats, chats...)
+			result.next = next
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+		return result
 	}
 }
 
@@ -66,12 +92,21 @@ func (m *Model) loadChannels(teamID string) tea.Cmd {
 }
 
 func (m *Model) loadMessages(ref model.ConvRef, cursor model.Page, older, poll bool) tea.Cmd {
+	cv := m.convs[ref.Key()]
+	if cv == nil {
+		return nil
+	}
+	if !older {
+		cv.headRequest++
+		cv.fetchingHead = true
+	}
+	request := cv.headRequest
 	svc := m.svc
 	return func() tea.Msg {
 		c, cancel := ctx()
 		defer cancel()
 		ms, next, err := svc.Messages(c, ref, cursor)
-		return messagesMsg{ref: ref, msgs: ms, next: next, older: older, poll: poll, err: err}
+		return messagesMsg{target: cv, request: request, ref: ref, msgs: ms, next: next, older: older, poll: poll, err: err}
 	}
 }
 
@@ -122,6 +157,8 @@ func (m *Model) loadPresence() tea.Cmd {
 }
 
 func (m *Model) loadEvents(day time.Time) tea.Cmd {
+	m.eventsRequest++
+	request := m.eventsRequest
 	svc := m.svc
 	start := day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7)) // monday of week
 	end := start.AddDate(0, 0, 7)
@@ -129,11 +166,14 @@ func (m *Model) loadEvents(day time.Time) tea.Cmd {
 		c, cancel := ctx()
 		defer cancel()
 		ev, err := svc.Events(c, start, end)
-		return eventsMsg{day, ev, err}
+		return eventsMsg{request: request, events: ev, err: err}
 	}
 }
 
 func (m *Model) loadFiles() tea.Cmd {
+	m.filesLoading = true
+	m.filesRequest++
+	request := m.filesRequest
 	svc := m.svc
 	loc := m.fileLoc
 	var parent *model.DriveItem
@@ -163,27 +203,31 @@ func (m *Model) loadFiles() tea.Cmd {
 		default:
 			items, err = svc.RecentFiles(c)
 		}
-		return filesMsg{key, items, err}
+		return filesMsg{request, key, items, err}
 	}
 }
 
 func (m *Model) loadTabFiles(ref model.ConvRef) tea.Cmd {
+	m.tabRequest++
+	request := m.tabRequest
 	svc := m.svc
 	return func() tea.Msg {
 		c, cancel := ctx()
 		defer cancel()
 		items, err := svc.ChannelFiles(c, ref.TeamID, ref.ChannelID)
-		return filesMsg{"tab:" + ref.Key(), items, err}
+		return filesMsg{request, "tab:" + ref.Key(), items, err}
 	}
 }
 
 func (m *Model) runSearch(q string) tea.Cmd {
+	m.searchRequest++
+	request := m.searchRequest
 	svc := m.svc
 	return func() tea.Msg {
 		c, cancel := ctx()
 		defer cancel()
 		h, err := svc.SearchMessages(c, q)
-		return searchMsg{q, h, err}
+		return searchMsg{request, q, h, err}
 	}
 }
 
@@ -211,6 +255,8 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		return c
 	}
 	switch msg := msg.(type) {
+	case readMsg:
+		return m.finishRead(msg)
 	case meMsg:
 		if msg.err != nil {
 			m.errToast(msg.err)
@@ -231,6 +277,10 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			m.errToast(msg.err)
 			return nil
 		}
+		m.nextChats = msg.next
+		if msg.more {
+			m.chatPages++
+		}
 		first := !m.chatsLoaded
 		m.chatsLoaded = true
 		var cmds []tea.Cmd
@@ -241,7 +291,7 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			}
 			prev, seen := m.lastPreview[c.ID]
 			m.lastPreview[c.ID] = c.LastMessage.ID
-			isActive := m.conv != nil && m.conv.ref.Kind == model.KindChat && m.conv.ref.ChatID == c.ID
+			isActive := m.viewingMessages(m.conv) && m.conv.ref.Kind == model.KindChat && m.conv.ref.ChatID == c.ID
 			fromOther := c.LastMessage.From.ID != m.me.ID && c.LastMessage.From.ID != ""
 			if first && c.Unread(m.me.ID) {
 				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: firstName(c.LastMessage.From.DisplayName) + " messaged you", preview: c.Title(m.me.ID) + ": " + c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID})
@@ -250,8 +300,8 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 				if isActive {
 					cmds = append(cmds, m.loadMessages(m.conv.ref, "", false, true))
 				}
-				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: firstName(c.LastMessage.From.DisplayName) + " messaged you", preview: c.Title(m.me.ID) + ": " + c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID, read: isActive && m.focused})
-				if !m.st.Muted["chat:"+c.ID] && (!isActive || !m.focused) {
+				m.addActivity(activityItem{at: c.LastMessage.Created, kind: "message", title: firstName(c.LastMessage.From.DisplayName) + " messaged you", preview: c.Title(m.me.ID) + ": " + c.LastMessage.Text, ref: model.ConvRef{Kind: model.KindChat, ChatID: c.ID}, msgID: c.LastMessage.ID, read: isActive})
+				if !m.st.Muted["chat:"+c.ID] && !isActive {
 					m.notify(c.LastMessage.From.DisplayName, c.LastMessage.Text, c.Title(m.me.ID))
 				}
 			}
@@ -261,7 +311,19 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		for _, c := range m.chats {
 			old[c.ID] = c.LastRead
 		}
-		m.chats = msg.chats
+		if !msg.more {
+			m.chats = nil
+		}
+		seenChats := map[string]bool{}
+		for _, chat := range m.chats {
+			seenChats[chat.ID] = true
+		}
+		for _, chat := range msg.chats {
+			if !seenChats[chat.ID] {
+				m.chats = append(m.chats, chat)
+				seenChats[chat.ID] = true
+			}
+		}
 		for i := range m.chats {
 			if t, ok := old[m.chats[i].ID]; ok && t.After(m.chats[i].LastRead) {
 				m.chats[i].LastRead = t
@@ -298,8 +360,8 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.noteChannelMessages(msg.ref, msg.msgs, false)
-		if cv := m.convs[msg.ref.Key()]; cv != nil && cv.merge(msg.msgs, false) {
-			cv.dirty = true
+		if cv := m.convs[msg.ref.Key()]; cv != nil {
+			cv.merge(msg.msgs, false)
 		}
 
 	case channelsMsg:
@@ -309,16 +371,19 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		m.channels[msg.teamID] = msg.channels
 
 	case messagesMsg:
-		if msg.poll {
-			m.pollingMsgs = false
-		}
 		cv := m.convs[msg.ref.Key()]
-		if cv == nil {
+		if cv == nil || cv != msg.target || (!msg.older && msg.request != cv.headRequest) {
 			return nil
 		}
-		cv.loading = false
+		if !msg.older {
+			cv.fetchingHead = false
+		}
+		if msg.older || !cv.loadedOnce {
+			cv.loading = false
+			cv.dirty = true
+		}
 		if msg.err != nil {
-			if !msg.poll {
+			if !msg.poll || !cv.loadedOnce {
 				cv.err = oneLineErr(msg.err)
 				m.errToast(msg.err)
 			}
@@ -330,7 +395,7 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			m.scanMentions(cv, mm)
 		}
 		if cv.ref.Kind == model.KindChannel && !msg.older {
-			viewing := cv == m.conv || cv == m.thread
+			viewing := m.viewingMessages(cv)
 			if cv.ref.ThreadID == "" {
 				m.noteChannelMessages(cv.ref, msg.msgs, viewing)
 			} else if viewing {
@@ -345,21 +410,18 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			cv.next = msg.next
 		}
 		cv.loadedOnce = true
-		if changed {
-			cv.dirty = true
-		}
-		if m.pendingSelect != "" {
-			for i := range cv.msgs {
-				if cv.msgs[i].ID == m.pendingSelect {
-					cv.selectMsg(i)
-					m.pendingSelect = ""
-					m.focus = FocusMessages
-					m.compose.ta.Blur()
-				}
+		if cv == m.activeConv() && cv.pendingSelect != "" && m.viewingMessages(cv) {
+			if i, ok := cv.index[cv.pendingSelect]; ok {
+				cv.selectMsg(i)
+				cv.pendingSelect = ""
+				m.setFocus(FocusMessages)
 			}
 		}
-		if cv.ref.Kind == model.KindChat && cv == m.conv && changed {
-			return m.markRead(cv.ref.ChatID)
+		if cv.ref.Kind == model.KindChat && cv == m.conv && !msg.older {
+			if changed {
+				m.awaitingRead[cv.ref.ChatID] = true
+			}
+			return m.readVisibleChat()
 		}
 
 	case sentMsg:
@@ -393,6 +455,9 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		}
 
 	case eventsMsg:
+		if msg.request != m.eventsRequest {
+			return nil
+		}
 		if msg.err != nil {
 			m.errToast(msg.err)
 			return nil
@@ -404,32 +469,42 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 		}
 
 	case filesMsg:
+		tab := strings.HasPrefix(msg.key, "tab:")
+		if tab {
+			if msg.request != m.tabRequest || m.conv == nil || msg.key != "tab:"+m.conv.ref.Key() || m.mainTab != 1 {
+				return nil
+			}
+		} else {
+			cur := m.fileLoc
+			if len(m.fileStack) > 0 {
+				cur += "/" + m.fileStack[len(m.fileStack)-1].ID
+			}
+			if msg.request != m.filesRequest || msg.key != cur {
+				return nil
+			}
+		}
+		if !tab {
+			m.filesLoading = false
+		}
 		if msg.err != nil {
 			m.errToast(msg.err)
 			return nil
 		}
-		if strings.HasPrefix(msg.key, "tab:") {
+		if tab {
 			m.tabFiles = msg.items
 			return nil
 		}
 		if strings.HasPrefix(msg.key, "loc:chan:") && !strings.Contains(msg.key, "/") {
 			m.fileCounts[msg.key] = len(msg.items)
 		}
-		cur := m.fileLoc
-		if len(m.fileStack) > 0 {
-			cur += "/" + m.fileStack[len(m.fileStack)-1].ID
-		}
-		if msg.key != cur {
-			return nil // stale
-		}
 		m.files = msg.items
 		m.fileSel = max(0, min(m.fileSel, len(m.files)-1))
 
 	case searchMsg:
-		if msg.q != m.searchQ {
+		m.busy = max(0, m.busy-1)
+		if msg.request != m.searchRequest || msg.q != m.searchQ {
 			return nil
 		}
-		m.busy = max(0, m.busy-1)
 		if msg.err != nil {
 			m.errToast(msg.err)
 			return nil
@@ -481,8 +556,7 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			m.errToast(msg.err)
 			return nil
 		}
-		m.compose.attachments = append(m.compose.attachments, msg.att)
-		m.setToast("Attached "+msg.att.Name, false)
+		m.finishUpload(msg)
 
 	case opMsg:
 		m.busy = max(0, m.busy-1)
@@ -525,24 +599,68 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) markRead(chatID string) tea.Cmd {
-	for i := range m.chats {
-		if m.chats[i].ID == chatID {
-			m.chats[i].LastRead = time.Now()
-		}
+	if m.readInFlight[chatID] {
+		m.awaitingRead[chatID] = true
+		return nil
 	}
-	for i := range m.activity {
-		if m.activity[i].ref.Kind == model.KindChat && m.activity[i].ref.ChatID == chatID {
-			m.activity[i].read = true
-		}
-	}
-	m.updateTitle()
+	delete(m.awaitingRead, chatID)
+	m.readInFlight[chatID] = true
+	at := time.Now()
 	svc := m.svc
 	return func() tea.Msg {
 		c, cancel := ctx()
 		defer cancel()
-		_ = svc.MarkChatRead(c, chatID)
+		return readMsg{chatID, at, svc.MarkChatRead(c, chatID)}
+	}
+}
+
+type readMsg struct {
+	chatID string
+	at     time.Time
+	err    error
+}
+
+func (m *Model) finishRead(msg readMsg) tea.Cmd {
+	delete(m.readInFlight, msg.chatID)
+	if msg.err != nil {
+		m.awaitingRead[msg.chatID] = true
+		m.errToast(msg.err)
 		return nil
 	}
+	for i := range m.chats {
+		c := &m.chats[i]
+		if c.ID == msg.chatID && c.LastRead.Before(msg.at) {
+			c.LastRead = msg.at
+		}
+	}
+	for i := range m.activity {
+		a := &m.activity[i]
+		if a.ref.Kind == model.KindChat && a.ref.ChatID == msg.chatID && !a.at.After(msg.at) {
+			a.read = true
+		}
+	}
+	return m.readVisibleChat()
+}
+
+func (m *Model) viewingMessages(cv *convView) bool {
+	if cv == nil || !m.focused || m.modal != nil || (m.ready && (m.w < 50 || m.h < 12)) {
+		return false
+	}
+	if !m.meetingMode() && (m.section == SecCalendar || m.section == SecSettings) {
+		return false
+	}
+	if cv == m.conv && cv.ref.Kind == model.KindChannel && m.mainTab == 1 {
+		return false
+	}
+	return cv == m.activeConv() || (cv == m.conv && m.splitThread())
+}
+
+func (m *Model) readVisibleChat() tea.Cmd {
+	cv := m.conv
+	if m.viewingMessages(cv) && cv.ref.Kind == model.KindChat && m.awaitingRead[cv.ref.ChatID] && !m.readInFlight[cv.ref.ChatID] {
+		return m.markRead(cv.ref.ChatID)
+	}
+	return nil
 }
 
 func (m *Model) unreadCount() int {
@@ -677,22 +795,6 @@ func (m *Model) convTitle(ref model.ConvRef) string {
 	return ""
 }
 
-func (m *Model) downloadPath(name string) string {
-	dir := m.cfg.DownloadDir
-	if dir == "" {
-		dir = os.TempDir()
-	}
-	p := filepath.Join(dir, name)
-	ext := filepath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			return p
-		}
-		p = filepath.Join(dir, base+" ("+itoa(i)+")"+ext)
-	}
-}
-
 func firstName(n string) string {
 	if f := strings.Fields(n); len(f) > 0 {
 		return f[0]
@@ -705,24 +807,14 @@ func (m *Model) noteReactions(cv *convView, incoming []model.Message) {
 	if m.me.ID == "" {
 		return
 	}
-	old := map[string]map[string]bool{}
-	for _, x := range cv.msgs {
-		if x.From.ID != m.me.ID {
-			continue
-		}
-		set := map[string]bool{}
-		for _, r := range x.Reactions {
-			set[r.UserID+r.Type] = true
-		}
-		old[x.ID] = set
-	}
 	for _, x := range incoming {
-		prev, ok := old[x.ID]
-		if !ok {
+		i, ok := cv.index[x.ID]
+		if !ok || cv.msgs[i].From.ID != m.me.ID || len(x.Reactions) == 0 {
 			continue
 		}
+		previous := cv.msgs[i].Reactions
 		for _, r := range x.Reactions {
-			if r.UserID == m.me.ID || prev[r.UserID+r.Type] {
+			if r.UserID == m.me.ID || slices.ContainsFunc(previous, func(old model.Reaction) bool { return old.UserID == r.UserID && old.Type == r.Type }) {
 				continue
 			}
 			who := firstName(m.userName(r.UserID))

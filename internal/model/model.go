@@ -4,6 +4,7 @@ package model
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -302,7 +303,7 @@ type Service interface {
 	Me(ctx context.Context) (User, error)
 	TenantID() string
 
-	Chats(ctx context.Context) ([]Chat, error)
+	Chats(ctx context.Context, cursor Page) ([]Chat, Page, error)
 	CreateChat(ctx context.Context, members []User, topic string) (Chat, error)
 	RenameChat(ctx context.Context, chatID, topic string) error
 	AddChatMember(ctx context.Context, chatID string, u User) error
@@ -320,7 +321,7 @@ type Service interface {
 	Delete(ctx context.Context, ref ConvRef, msgID string) error
 	React(ctx context.Context, ref ConvRef, msgID, emoji string, on bool) error
 	Upload(ctx context.Context, ref ConvRef, localPath string) (Attachment, error)
-	FetchURL(ctx context.Context, url, dest string) error
+	FetchURL(ctx context.Context, url string, dest io.Writer) error
 
 	Presence(ctx context.Context, userIDs []string) (map[string]Presence, error)
 	MyPresence(ctx context.Context) (Presence, error)
@@ -345,5 +346,5 @@ type Service interface {
 	ChannelFiles(ctx context.Context, teamID, channelID string) ([]DriveItem, error)
 	SharedFiles(ctx context.Context) ([]DriveItem, error)
 	UploadFile(ctx context.Context, folder *DriveItem, localPath string) (DriveItem, error)
-	Download(ctx context.Context, item DriveItem, dest string) error
+	Download(ctx context.Context, item DriveItem, dest io.Writer) error
 }

@@ -22,16 +22,19 @@ type pendingMention struct {
 
 // composer wraps the message input box.
 type composer struct {
-	m           *Model
-	ta          textarea.Model
-	key         string // conversation key the composer is bound to
-	editingID   string
-	editingRef  model.ConvRef
-	quote       *model.Message
-	mentions    []pendingMention
-	attachments []model.Attachment
-	importance  string
-	subject     string
+	editSession      uint64
+	m                *Model
+	ta               textarea.Model
+	key              string // conversation key the composer is bound to
+	editingID        string
+	editingRef       model.ConvRef
+	quote            *model.Message
+	mentions         []pendingMention
+	attachments      []model.Attachment
+	draftVersion     map[string]uint64
+	draftAttachments map[string][]model.Attachment
+	importance       string
+	subject          string
 
 	// mention autocomplete
 	mQuery string
@@ -52,15 +55,15 @@ func newComposer(m *Model) composer {
 	ta.FocusedStyle.Placeholder = m.s.Faint
 	ta.BlurredStyle.Placeholder = m.s.Faint
 	ta.Blur()
-	return composer{m: m, ta: ta}
+	return composer{m: m, ta: ta, draftVersion: map[string]uint64{}, draftAttachments: map[string][]model.Attachment{}}
 }
 
 func (c *composer) resize() {
 	w := c.m.composeWidth()
-	if w > 0 {
+	if w > 0 && c.ta.Width() != w {
 		c.ta.SetWidth(w)
+		c.autoHeight()
 	}
-	c.autoHeight()
 }
 
 func (c *composer) autoHeight() {
@@ -80,6 +83,7 @@ func (c *composer) bind(key string) {
 	c.saveDraft()
 	c.key = key
 	c.reset()
+	c.attachments = c.draftAttachments[key]
 	if d, ok := c.m.st.Drafts[key]; ok {
 		c.ta.SetValue(d)
 	}
@@ -90,6 +94,7 @@ func (c *composer) saveDraft() {
 	if c.key == "" || c.editingID != "" || c.m.st == nil {
 		return
 	}
+	c.draftAttachments[c.key] = c.attachments
 	if v := c.ta.Value(); strings.TrimSpace(v) != "" {
 		c.m.st.Drafts[c.key] = v
 	} else {
@@ -99,6 +104,7 @@ func (c *composer) saveDraft() {
 
 func (c *composer) reset() {
 	c.ta.Reset()
+	c.editSession++
 	c.editingID = ""
 	c.quote = nil
 	c.mentions = nil
@@ -217,6 +223,7 @@ func (m *Model) composeKey(msg tea.KeyMsg) tea.Cmd {
 
 func (m *Model) restoreDraft() {
 	c := &m.compose
+	c.attachments = c.draftAttachments[c.key]
 	if d, ok := m.st.Drafts[c.key]; ok {
 		c.ta.SetValue(d)
 	}
@@ -308,6 +315,8 @@ func (m *Model) submitCompose() tea.Cmd {
 
 	ref := ac.ref
 	tempID := ac.addTemp(m.me, out)
+	c.draftVersion[c.key]++
+	delete(c.draftAttachments, c.key)
 	delete(m.st.Drafts, c.key)
 	c.reset()
 	return func() tea.Msg {
@@ -345,15 +354,35 @@ func (m *Model) attachFile(path string) tea.Cmd {
 		return nil
 	}
 	ref := ac.ref
+	cx := m.transferCtx
+	draft := m.compose.draftVersion[ref.Key()]
+	var edit uint64
+	if m.compose.editingID != "" {
+		edit = m.compose.editSession
+	}
 	svc := m.svc
 	m.busy++
 	m.setToast("Uploading "+filepath.Base(path)+"…", false)
 	return func() tea.Msg {
-		cx, cancel := ctx()
-		defer cancel()
+
 		a, err := svc.Upload(cx, ref, path)
-		return uploadMsg{ref, a, err}
+		return uploadMsg{draft: draft, editSession: edit, ref: ref, att: a, err: err}
 	}
+}
+
+func (m *Model) finishUpload(msg uploadMsg) {
+	c := &m.compose
+	key := msg.ref.Key()
+	if msg.draft != c.draftVersion[key] || (msg.editSession != 0 && (key != c.key || msg.editSession != c.editSession)) {
+		m.setToast("Upload finished after the draft was closed: "+msg.att.Name, false)
+		return
+	}
+	if key == c.key && (c.editingID == "" || msg.editSession != 0) {
+		c.attachments = append(c.attachments, msg.att)
+	} else {
+		c.draftAttachments[key] = append(c.draftAttachments[key], msg.att)
+	}
+	m.setToast("Attached "+msg.att.Name+" in "+m.convTitle(msg.ref), false)
 }
 
 // slashCommand handles /commands typed in the compose box.
