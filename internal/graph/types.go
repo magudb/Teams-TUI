@@ -90,7 +90,43 @@ type gChat struct {
 		MessageType     string        `json:"messageType"`
 		Body            gBody         `json:"body"`
 		From            *gIdentitySet `json:"from"`
+		EventDetail     *gEventDetail `json:"eventDetail"`
 	} `json:"lastMessagePreview"`
+}
+
+// gEventDetail is the part of a system event message that describes a call.
+type gEventDetail struct {
+	Type          string        `json:"@odata.type"`
+	CallEventType string        `json:"callEventType"`
+	CallID        string        `json:"callId"`
+	Initiator     *gIdentitySet `json:"initiator"`
+	Participants  []struct {
+		Participant *gIdentitySet `json:"participant"`
+	} `json:"callParticipants"`
+}
+
+// toCall returns the call event, or nil for other kinds of system events.
+func (d *gEventDetail) toCall() *model.CallEvent {
+	if d == nil {
+		return nil
+	}
+	out := &model.CallEvent{Type: d.CallEventType, CallID: d.CallID}
+	switch d.Type {
+	case "#microsoft.graph.callStartedEventMessageDetail":
+		out.Started = true
+	case "#microsoft.graph.callEndedEventMessageDetail":
+	default:
+		return nil
+	}
+	if d.Initiator != nil {
+		out.Initiator = d.Initiator.toUser()
+	}
+	for _, p := range d.Participants {
+		if p.Participant != nil && p.Participant.User != nil {
+			out.Participants = append(out.Participants, p.Participant.User.ID)
+		}
+	}
+	return out
 }
 
 func (c gChat) toModel() model.Chat {
@@ -111,7 +147,10 @@ func (c gChat) toModel() model.Chat {
 		}
 		out.LastMessage = &model.MessagePreview{
 			ID: p.ID, From: p.From.toUser(), Text: strings.TrimSpace(text),
-			Created: p.CreatedDateTime, Deleted: p.IsDeleted,
+			Created: p.CreatedDateTime, Deleted: p.IsDeleted, Call: p.EventDetail.toCall(),
+		}
+		if c := out.LastMessage.Call; c != nil && out.LastMessage.Text == "" {
+			out.LastMessage.Text = c.Label()
 		}
 	}
 	return out

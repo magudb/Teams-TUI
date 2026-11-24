@@ -472,7 +472,10 @@ func (m *Model) callLink(video bool) string {
 	if m.conv == nil || m.conv.ref.Kind != model.KindChat {
 		return ""
 	}
-	c := m.chatByID(m.conv.ref.ChatID)
+	return m.callLinkFor(m.chatByID(m.conv.ref.ChatID), video)
+}
+
+func (m *Model) callLinkFor(c *model.Chat, video bool) string {
 	if c == nil {
 		return ""
 	}
@@ -673,6 +676,7 @@ var helpText = []string{
 	"  ctrl+b            Toggle sidebar",
 	"  ctrl+r            Refresh",
 	"  alt+j             Join the meeting that is live or starts within 10 min",
+	"  alt+a             Show the waiting call / meeting alert",
 	"  Settings          click the gear in the rail, or ctrl+k → Settings",
 	"  tab / shift+tab   Cycle focus: sidebar → messages → compose",
 	"  esc               Back (close modal / thread / leave compose)",

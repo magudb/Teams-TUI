@@ -536,6 +536,8 @@ func (m *Model) activityItem(i int, a activityItem, w int) sideItem {
 		icon = ic.ThumbsUp
 	case "meeting":
 		icon = ic.Calendar
+	case "call":
+		icon = ic.Phone
 	case "added":
 		icon = ic.Chat
 	}

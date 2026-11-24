@@ -71,6 +71,28 @@ type MessagePreview struct {
 	Text    string
 	Created time.Time
 	Deleted bool
+	Call    *CallEvent // set when the last message is a call started/ended event
+}
+
+// CallEvent is a call or meeting lifecycle event that Teams posts to a chat.
+type CallEvent struct {
+	Started      bool   // false: the call ended
+	Type         string // call, meeting, screenShare
+	CallID       string
+	Initiator    User
+	Participants []string // user ids of those who took part (ended events)
+}
+
+// Label describes the event for chat list previews.
+func (c *CallEvent) Label() string {
+	what := "Call"
+	if c.Type == "meeting" {
+		what = "Meeting"
+	}
+	if c.Started {
+		return what + " started"
+	}
+	return what + " ended"
 }
 
 // Unread reports whether the chat has a message newer than the last read time

@@ -118,6 +118,21 @@ type Model struct {
 
 	modal *modal
 
+	// call and meeting alerts (alerts.go)
+	alerts         []*alert
+	alertOpen      bool
+	alertShown     time.Time
+	alertGuard     time.Duration   // ignore keys this long after an alert pops up
+	alerted        map[string]bool // alert ids already raised
+	dismissedCalls map[string]bool
+	joined         map[string]bool      // event and chat ids joined from here
+	reminded       map[string]bool      // event ids with a reminder shown
+	remindAt       map[string]time.Time // event id -> remind again at
+	agenda         []model.Event        // the next day, independent of the calendar week shown
+	agendaLoaded   bool
+	lastPollAgenda time.Time
+	lastKey        time.Time
+
 	toast      string
 	toastErr   bool
 	toastUntil time.Time
@@ -192,6 +207,12 @@ func New(svc model.Service, cfg config.Config, st *state.State, demo bool) *Mode
 		chatTitles:      map[string]string{},
 		chanAct:         map[string]chanActivity{},
 		sideTouched:     map[Section]bool{},
+		alertGuard:      600 * time.Millisecond,
+		alerted:         map[string]bool{},
+		dismissedCalls:  map[string]bool{},
+		joined:          map[string]bool{},
+		reminded:        map[string]bool{},
+		remindAt:        map[string]time.Time{},
 		fileCounts:      map[string]int{},
 		fileLoc:         "loc:recent",
 		showPeople:      true,
@@ -223,7 +244,7 @@ func today() time.Time {
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadMe(), m.loadMyPresence(), m.loadChats(), m.loadTeams(),
-		m.loadEvents(m.calDay), tick(), tea.SetWindowTitle("Teams"),
+		m.loadEvents(m.calDay), m.loadAgenda(), tick(), tea.SetWindowTitle("Teams"),
 	)
 }
 
@@ -364,7 +385,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 
 func (m *Model) onTick(now time.Time) tea.Cmd {
 	var cmds []tea.Cmd
-	m.checkUpcoming()
+	cmds = append(cmds, m.checkUpcoming(), m.alertTick(now))
 	if !m.toastUntil.IsZero() && now.After(m.toastUntil) {
 		m.toast = ""
 		m.toastUntil = time.Time{}
@@ -389,6 +410,10 @@ func (m *Model) onTick(now time.Time) tea.Cmd {
 	if iv := time.Duration(m.cfg.PollChannelSeconds) * time.Second; iv > 0 && !m.chanPollDisabled && !m.pollingChannel && now.Sub(m.lastChanPoll) >= iv {
 		m.lastChanPoll = now
 		cmds = append(cmds, m.pollNextChannel())
+	}
+	if now.Sub(m.lastPollAgenda) >= 2*time.Minute {
+		m.lastPollAgenda = now
+		cmds = append(cmds, m.loadAgenda())
 	}
 	if now.Sub(m.lastPollEvents) >= 5*time.Minute {
 		m.lastPollEvents = now

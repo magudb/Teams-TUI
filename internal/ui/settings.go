@@ -90,6 +90,8 @@ func (m *Model) settingsRows() []settingRow {
 			change: func(m *Model) tea.Cmd { m.cfg.DesktopNotifications = !m.cfg.DesktopNotifications; dirty(m); return nil }},
 		{section: "Notifications", label: "Terminal bell", value: func(sel bool) string { return m.chipOnOff(c.Bell, sel) },
 			change: func(m *Model) tea.Cmd { m.cfg.Bell = !m.cfg.Bell; dirty(m); return nil }},
+		{section: "Notifications", label: "Call and meeting dialogs", value: func(sel bool) string { return m.chipOnOff(c.Alerts, sel) },
+			change: func(m *Model) tea.Cmd { m.cfg.Alerts = !m.cfg.Alerts; dirty(m); return nil }},
 		{section: "Notifications", label: "Meeting reminder", value: txt(itoa(c.MeetingReminderMinutes) + " min before"),
 			change: func(m *Model) tea.Cmd {
 				m.cfg.MeetingReminderMinutes = cycle([]int{1, 5, 10, 15}, m.cfg.MeetingReminderMinutes)

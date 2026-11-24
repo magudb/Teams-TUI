@@ -189,3 +189,26 @@ func TestChatContinuation(t *testing.T) {
 		t.Fatal(last, next, err)
 	}
 }
+
+func TestCallEventDetail(t *testing.T) {
+	var c gChat
+	raw := `{"id":"19:x","chatType":"oneOnOne","lastMessagePreview":{"id":"1","messageType":"unknownFutureValue",
+		"body":{"contentType":"html","content":"<systemEventMessage/>"},
+		"eventDetail":{"@odata.type":"#microsoft.graph.callEndedEventMessageDetail","callEventType":"call","callId":"abc",
+		"initiator":{"user":{"id":"u1","displayName":"Ann"}},
+		"callParticipants":[{"participant":{"user":{"id":"u1"}}},{"participant":{"user":{"id":"u2"}}}]}}}`
+	if err := jsonUnmarshal([]byte(raw), &c); err != nil {
+		t.Fatal(err)
+	}
+	p := c.toModel().LastMessage
+	if p.Call == nil || p.Call.Started || p.Call.Type != "call" || p.Call.CallID != "abc" || p.Call.Initiator.ID != "u1" || len(p.Call.Participants) != 2 {
+		t.Fatalf("call event not parsed: %+v", p.Call)
+	}
+	if p.Text != "Call ended" {
+		t.Errorf("preview text = %q", p.Text)
+	}
+	other := gEventDetail{Type: "#microsoft.graph.callRecordingEventMessageDetail"}
+	if other.toCall() != nil {
+		t.Errorf("recording events are not calls")
+	}
+}

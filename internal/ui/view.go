@@ -89,7 +89,10 @@ func (m *Model) View() string {
 	}
 	cols = append(cols, m.mainView(m.mainWidth(), bodyH))
 	out := lipgloss.JoinHorizontal(lipgloss.Top, cols...) + "\n" + m.statusView()
-	if m.modal != nil {
+	switch {
+	case m.alertVisible():
+		out = overlay(dim(out, m.s), m.alertView(), m.w, m.h)
+	case m.modal != nil:
 		out = overlay(dim(out, m.s), m.modalView(), m.w, m.h)
 	}
 	return zone.Scan(out)
@@ -470,6 +473,9 @@ func (m *Model) statusView() string {
 
 	var mid string
 	switch {
+	case len(m.alerts) > 0 && !m.alertOpen:
+		a := m.alerts[0]
+		mid = zone.Mark("status:alert", ink.Foreground(s.t.RailBadge).Bold(true).Render(" "+m.alertIcon(a)+" "+a.head+" · "+a.title+" — alt+a"))
 	case m.toast != "" && m.toastErr:
 		mid = ink.Foreground(s.t.RailBadge).Bold(true).Render(" ⚠ " + m.toast)
 	case m.toast != "":
@@ -498,6 +504,9 @@ func (s styles) isLight() bool { return s.t.Paper == "#F4F1EA" }
 func (s styles) bgOf(c lipgloss.Color) string { return bgPrefix(c) }
 
 func (m *Model) hints() string {
+	if m.alertVisible() {
+		return "←→ choose · enter select · esc dismiss"
+	}
 	if m.modal != nil {
 		return "↑↓ move · enter run · esc close"
 	}

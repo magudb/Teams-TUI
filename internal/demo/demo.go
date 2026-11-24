@@ -240,6 +240,32 @@ func (s *Service) refreshPreview(c *model.Chat) {
 	c.LastMessage = &model.MessagePreview{ID: m.ID, From: m.From, Text: htmltext.Plain(m.Body), Created: m.Created, Deleted: m.Deleted}
 }
 
+// Call posts a call started or ended event to a chat, from its first other
+// member. kind is "call" or "meeting".
+func (s *Service) Call(chatID, callID, kind string, started bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callLocked(chatID, callID, kind, started)
+}
+
+func (s *Service) callLocked(chatID, callID, kind string, started bool) {
+	c := s.findChat(chatID)
+	if c == nil {
+		return
+	}
+	ev := &model.CallEvent{Started: started, Type: kind, CallID: callID}
+	for _, u := range c.Members {
+		if u.ID != s.me.ID {
+			ev.Initiator = u
+			break
+		}
+	}
+	if !started {
+		ev.Participants = []string{ev.Initiator.ID}
+	}
+	c.LastMessage = &model.MessagePreview{ID: s.id(), Text: ev.Label(), Created: time.Now(), Call: ev}
+}
+
 var chatter = []string{
 	"Sounds good!", "Can we move this to tomorrow?", "I pushed a fix, can you take a look? 🙏",
 	"Thanks! 🎉", "On my way", "Let me check and get back to you.", "Meeting notes are in the channel.",
@@ -253,6 +279,14 @@ func (s *Service) tick() {
 	}
 	s.lastTick = time.Now()
 	s.ticks++
+	switch s.ticks {
+	case 2: // an incoming call that nobody answers
+		s.callLocked("c3", "demo-call", "call", true)
+		return
+	case 3:
+		s.callLocked("c3", "demo-call", "call", false)
+		return
+	}
 	if s.ticks%3 == 0 {
 		// every third tick: activity in a channel
 		var refs []model.ConvRef

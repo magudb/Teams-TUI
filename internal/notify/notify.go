@@ -2,9 +2,13 @@
 package notify
 
 import (
+	"context"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Desktop shows a native notification (best effort, non-blocking).
@@ -28,6 +32,41 @@ func Desktop(title, body string) {
 	}
 	_ = cmd.Start()
 	go func() { _ = cmd.Wait() }()
+}
+
+// Ask shows a notification with one action button and blocks until the user
+// activates it, the notification closes, or ctx ends. It reports whether the
+// action was chosen. Where notifications can't carry actions it shows a plain
+// one and returns false.
+func Ask(ctx context.Context, title, body, action string, urgent bool, expire time.Duration) bool {
+	title = truncate(title, 80)
+	body = truncate(body, 200)
+	switch runtime.GOOS {
+	case "linux", "freebsd", "openbsd":
+	default:
+		Desktop(title, body)
+		return false
+	}
+	args := []string{
+		"--app-name=teams-tui",
+		"--action=default=" + action,
+		"--expire-time=" + strconv.FormatInt(expire.Milliseconds(), 10),
+	}
+	if urgent {
+		args = append(args, "--urgency=critical")
+	}
+	cmd := exec.CommandContext(ctx, "notify-send", append(args, title, body)...)
+	// SIGINT makes notify-send close the notification it is waiting on
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() == nil {
+			Desktop(title, body) // notify-send without action support
+		}
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "default"
 }
 
 // Open opens a URL or file with the OS default handler.

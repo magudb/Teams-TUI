@@ -289,6 +289,7 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			if c.LastMessage == nil {
 				continue
 			}
+			cmds = append(cmds, m.noteCall(c, first))
 			prev, seen := m.lastPreview[c.ID]
 			m.lastPreview[c.ID] = c.LastMessage.ID
 			isActive := m.viewingMessages(m.conv) && m.conv.ref.Kind == model.KindChat && m.conv.ref.ChatID == c.ID
@@ -463,10 +464,21 @@ func (m *Model) handleData(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.events = msg.events
-		m.checkUpcoming()
+		cmd := m.checkUpcoming()
 		if m.section == SecCalendar {
-			return m.onEventSelected()
+			return tea.Batch(cmd, m.onEventSelected())
 		}
+		return cmd
+
+	case agendaMsg:
+		if msg.err != nil {
+			return nil
+		}
+		m.agenda, m.agendaLoaded = msg.events, true
+		return m.checkUpcoming()
+
+	case alertDesktopMsg:
+		return m.alertFromDesktop(msg)
 
 	case filesMsg:
 		tab := strings.HasPrefix(msg.key, "tab:")
@@ -733,31 +745,6 @@ func (m *Model) notify(from, text, where string) {
 		notify.Desktop(title, text)
 	}
 	m.setToast("💬 "+from+": "+plainOneLine(text), false)
-}
-
-var notifiedEvents = map[string]bool{}
-
-// checkUpcoming notifies about meetings starting within the next 5 minutes.
-func (m *Model) checkUpcoming() {
-	now := time.Now()
-	for _, e := range m.events {
-		if e.IsCancelled || e.Response == "declined" || notifiedEvents[e.ID] {
-			continue
-		}
-		if d := e.Start.Sub(now); d > 0 && d <= time.Duration(m.cfg.MeetingReminderMinutes)*time.Minute {
-			notifiedEvents[e.ID] = true
-			prev := "Starts " + e.Start.Format(m.cfg.TimeFormat)
-			if n := len(e.Attendees); n > 0 {
-				prev += " · " + itoa(n) + " attendees"
-			}
-			m.addActivity(activityItem{at: now, kind: "meeting", title: e.Subject, preview: prev, msgID: e.ID})
-			hint := ""
-			if e.JoinURL != "" {
-				hint = " — alt+j to join"
-			}
-			m.notify("Meeting starting soon", e.Subject+" at "+e.Start.Format(m.cfg.TimeFormat)+hint, "")
-		}
-	}
 }
 
 func (m *Model) convTitle(ref model.ConvRef) string {

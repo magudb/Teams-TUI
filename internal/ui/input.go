@@ -25,6 +25,14 @@ func (m *Model) handleKeyInner(msg tea.KeyMsg) tea.Cmd {
 	if k == "ctrl+c" {
 		return tea.Quit
 	}
+	if m.alertVisible() {
+		return m.alertKey(msg)
+	}
+	m.lastKey = time.Now()
+	if k == "alt+a" && len(m.alerts) > 0 {
+		m.showAlert()
+		return nil
+	}
 	if m.modal != nil {
 		return m.modalKey(msg)
 	}
@@ -533,6 +541,9 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 }
 
 func (m *Model) handleMouseInner(msg tea.MouseMsg) tea.Cmd {
+	if m.alertVisible() {
+		return m.alertMouse(msg)
+	}
 	if m.modal != nil {
 		return m.modalMouse(msg)
 	}
@@ -721,6 +732,10 @@ func (m *Model) clickZones(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 	if in("rail:help") {
 		m.openHelp()
+		return nil, true
+	}
+	if in("status:alert") && len(m.alerts) > 0 {
+		m.showAlert()
 		return nil, true
 	}
 	if in("status:join") {

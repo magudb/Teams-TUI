@@ -31,6 +31,9 @@ type Config struct {
 	ASCIIIcons           bool   `json:"ascii_icons,omitempty"` // deprecated: use icons
 	// Icons is "nerd" (Nerd Font glyphs, as in the design) or "ascii".
 	Icons string `json:"icons"`
+	// Alerts shows a dialog for incoming calls and for meetings that are
+	// starting. When false these only produce a notification.
+	Alerts bool `json:"alerts"`
 	// MeetingReminderMinutes is how long before a meeting the reminder fires.
 	MeetingReminderMinutes int `json:"meeting_reminder_minutes"`
 	// Tenants remembers tenants signed in to, for the login tenant picker.
@@ -59,6 +62,7 @@ func Default() Config {
 		SidebarWidth:           33,
 		Theme:                  "light",
 		Icons:                  "nerd",
+		Alerts:                 true,
 		MeetingReminderMinutes: 5,
 		CombinedChat:           true,
 		PollChannelSeconds:     4,

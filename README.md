@@ -26,7 +26,8 @@ teams-tui             # sign in with your Microsoft 365 account
 | **Calendar** | Week strip and day agenda · meeting details, attendees · **Join** (opens the Teams client) · accept / tentative / decline · schedule a new Teams meeting |
 | **Files** | Recent files and OneDrive browser · open in browser · download · copy link |
 | **Search** | Full-text message search across chats and channels, jump to result |
-| **Notifications** | Desktop notifications (macOS / Linux / Windows), optional terminal bell, meeting-starting-soon reminders |
+| **Notifications** | Desktop notifications (macOS / Linux / Windows), optional terminal bell |
+| **Alerts** | A dialog for incoming calls, meetings someone has started and meetings about to start, with *Answer / Join in Teams*, *Meeting chat*, *Reply* and *Remind at start* · missed-call dialog with *Call back* · on Linux the desktop notification has a Join / Answer button too |
 | **Meetings** | Join banner + `alt+j` · attendees with presence and RSVP · meeting chat · transcripts and recording download after the meeting |
 | **Calls** | 📞 / 📹 buttons and **Join** hand the call off to the Teams desktop or web client. A terminal can't carry audio or video. |
 | **UI** | Command palette (ctrl+k) · mouse everywhere (click, right-click menus, wheel scroll) · dark/light theme · responsive layout down to 80×24 |
@@ -69,11 +70,25 @@ Graph has no unread state for channels, so the app tracks it itself. In the back
 The terminal works as a meeting companion. Audio and video stay in the Teams app.
 
 - **Join**: the status bar shows the meeting that's live or starts within 10 minutes, with a *Join* button (or press `alt+j`). Joining opens the meeting in the Teams client.
+- **Alerts**: a dialog pops up when a meeting is about to start (`meeting_reminder_minutes` before), when someone starts a meeting you're invited to, and when someone calls you. Pick an action with `←→` and `enter`, its letter, or the mouse; `esc` dismisses. See [Call and meeting alerts](#call-and-meeting-alerts).
 - **Calendar details**: attendees with their presence and RSVP (✓ ~ ✗ ?), plus buttons for the meeting chat, accept/maybe/decline, and Outlook.
 - **Meeting chat**: press `c` in the calendar, or *Join* in the header of a meeting chat.
 - **After the meeting**: open the transcript (`x`, with copy and save to Downloads) and download the recording (`R`). Graph normally only gives these to the meeting organizer, and an admin can turn API access to them off. The app tells you when that's the case.
 
 These features need three extra scopes: `OnlineMeetings.Read`, `OnlineMeetingTranscript.Read.All` and `OnlineMeetingRecording.Read.All`. If you signed in before they were added, run `teams-tui login` again. Existing sessions keep working without them.
+
+## Call and meeting alerts
+
+| Alert | When | Actions |
+|---|---|---|
+| **Meeting starting soon** | `meeting_reminder_minutes` before a meeting in your calendar (not all-day, cancelled or declined ones) | Join in Teams · Meeting chat · Remind at start |
+| **Meeting started** | someone starts a meeting whose chat you're in | Join in Teams · Meeting chat |
+| **Incoming call** | someone calls you or starts a call in a group chat | Answer in Teams (opens the chat, where Teams shows the call) · Reply with a message |
+| **Missed call** | a 1:1 call ended without you | Call back in Teams · Send a message |
+
+The dialog never interrupts typing. While you're writing a message or have another dialog open, the alert waits in the status bar and opens after a 3 second pause, or at once with `alt+a`. Clicking outside the dialog sends it back to the status bar. On Linux the desktop notification carries the main action as a button (needs `notify-send` 0.8 or newer), so you can join from another window.
+
+Graph has no ringing signal. Calls and started meetings are detected from the event Teams posts to the chat, which the chat list poll picks up every `poll_chats_seconds` (default 15). So an alert can be that late, and a short ring may only show up as a missed call. Lower `poll_chats_seconds` (minimum 5) to react faster. Nothing alerts while your presence says you're already on a call. Set `"alerts": false`, or switch it off in Settings, to get a plain notification instead of a dialog.
 
 ## List order
 
@@ -114,6 +129,7 @@ Other commands: `teams-tui login`, `teams-tui logout`, `teams-tui config` (print
 | Key | Default | |
 |---|---|---|
 | `desktop_notifications` | `true` | native notifications for new messages |
+| `alerts` | `true` | dialogs for incoming calls and starting meetings |
 | `bell` | `false` | ring the terminal bell |
 | `poll_messages_seconds` / `poll_chats_seconds` / `poll_presence_seconds` | 5 / 15 / 60 | how often to poll |
 | `download_dir` | `~/Downloads` | |
