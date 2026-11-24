@@ -1,0 +1,54 @@
+# GoReleaser config: builds teams-tui for Linux, macOS and Windows on
+# amd64 and arm64 and publishes them to a GitHub release.
+version: 2
+
+project_name: teams-tui
+
+builds:
+  - id: teams-tui
+    main: ./cmd/teams-tui
+    binary: teams-tui
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macOS{{ else }}{{ title .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "Merge pull request"
+
+release:
+  prerelease: auto
+  footer: |
+    **Install:** download the archive for your platform, unpack it and put `teams-tui` on your PATH.
+    On macOS the binary isn't notarized yet; if Gatekeeper blocks it run `xattr -d com.apple.quarantine ./teams-tui`.
